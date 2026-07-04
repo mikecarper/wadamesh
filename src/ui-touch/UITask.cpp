@@ -35101,6 +35101,9 @@ static bool m9HandleArrowKey(int key, lv_obj_t* ta) {
 // — the on-screen keyboard's target, which is the chat composer directly or the
 // settings mirror textarea. No field open -> the key is ignored.
 static void handleHwKey(int key) {
+  // Game Boy owns the physical keyboard while open (this is the T-Deck key path;
+  // navPump's hook is Tanmatsu-only). Map the char onto the GB pad and swallow.
+  if (GameBoy::isOpen()) { GameBoy::keyChar((char)key); return; }
   if (!g_lv.keyboard) return;
 if (g_lv.task && g_lv.task->isManualLock()) {
 #if defined(HAS_M9_KEYBOARD)
