@@ -99,6 +99,7 @@ typedef enum
 
 typedef void (gb_video_cb_t)(void *buffer);
 typedef void (gb_audio_cb_t)(void *buffer, size_t length);
+typedef bool (gb_serial_start_cb_t)(uint8_t outgoing, bool internal_clock);
 
 int  gnuboy_init(int samplerate, gb_audio_fmt_t audio_fmt, gb_video_fmt_t video_fmt, gb_video_cb_t *video_callback, gb_audio_cb_t *audio_callback);
 void gnuboy_deinit(void);
@@ -109,10 +110,18 @@ int  gnuboy_load_rom(const byte *data, size_t size);
 int  gnuboy_load_rom_file(const char *file);
 void gnuboy_free_rom(void);
 void gnuboy_reset(bool hard);
-void gnuboy_run(bool draw);
+bool gnuboy_run(bool draw);
 bool gnuboy_sram_dirty(void);
 void gnuboy_load_bank(int);
 void gnuboy_set_pad(int);
+
+/* Optional host-owned serial link. A handled transfer pauses virtual time until
+ * the host completes it, so network latency does not become emulated time. */
+void gnuboy_set_serial_callback(gb_serial_start_cb_t *callback);
+bool gnuboy_serial_waiting(void);
+bool gnuboy_serial_rearm(void);
+void gnuboy_serial_complete(uint8_t incoming);
+void gnuboy_serial_cancel(void);
 
 void gnuboy_set_framebuffer(void *buffer);
 void gnuboy_set_soundbuffer(void *buffer, size_t length);

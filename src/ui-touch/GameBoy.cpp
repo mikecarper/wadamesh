@@ -3,6 +3,7 @@
 
 #if defined(HAS_TDECK_GT911) || defined(TLORA_PAGER)
 
+#include "GameBoyWifiLink.h"
 #include <Arduino.h>          // millis/micros, ps_malloc
 #include <SD.h>               // ROM listing + read (T-Deck microSD)
 #include <LvglPsramAlloc.h>   // PSRAM canvas buffer
@@ -63,6 +64,7 @@ static lv_obj_t*   s_play      = nullptr;   // play-UI container (canvas + contr
 static lv_obj_t*   s_canvas    = nullptr;   // scaled GB output
 static lv_obj_t*   s_menu_btn  = nullptr;   // top-right menu button (repainted over the direct blit)
 static lv_obj_t*   s_menu      = nullptr;   // in-game pause menu (phase 2)
+static lv_obj_t*   s_link_status = nullptr; // live WiFi link status in the pause menu
 static lv_color_t* s_fb        = nullptr;   // canvas buffer (scaled output)
 static lv_color_t* s_gbfb      = nullptr;   // gnuboy's fixed 160x144 framebuffer
 static lv_timer_t* s_timer     = nullptr;
@@ -89,6 +91,9 @@ static uint32_t    s_pulse_until = 0;
 
 static uint32_t    s_next_us     = 0;       // deadline of the next frame
 static uint32_t    s_frame_count = 0;
+static uint32_t    s_rom_id      = 0;
+static uint32_t    s_link_status_revision = UINT32_MAX;
+static GameBoyWifiLink s_wifi_link;
 
 // Audio: producer (audio_cb, UI thread) -> stream buffer -> consumer task (core 1)
 // -> blocking i2s_write. Decouples the amp from frame timing so a slow/bursty
@@ -116,6 +121,11 @@ static void audioStart(void);
 static void audioStop(void);
 static void closeMenu(void);
 static void closeDispatch(void*);
+static void updateLinkStatus(bool force = false);
+
+extern "C" bool touchGbSerialStart(uint8_t outgoing, bool internal_clock) {
+    return s_wifi_link.beginTransfer(outgoing, internal_clock);
+}
 
 // ---------------------------------------------------------------------------
 // Rendering: gnuboy renders into s_gbfb (160x144). Scale it into the canvas
@@ -288,15 +298,27 @@ static void frameCb(lv_timer_t* /*t*/) {
     else                                         s_pulse_mask = 0;
     gnuboy_set_pad(pad);
 
+    int completed = 0;
     for (int i = 0; i < frames; i++) {
-        gnuboy_run(i == frames - 1);   // draw only the final frame of the burst
+        // A WiFi-owned serial transfer yields the partial frame. Reset the
+        // wall-clock deadline so link latency does not cause a catch-up burst.
+        if (!gnuboy_run(i == frames - 1)) {
+            s_next_us = micros();
+            return;
+        }
         s_next_us += FRAME_US;
+        completed++;
     }
 
-    if (s_audio_warmup > 0) s_audio_warmup--;
+    if (s_audio_warmup > 0) {
+        s_audio_warmup -= completed;
+        if (s_audio_warmup < 0) s_audio_warmup = 0;
+    }
 
-    if (++s_frame_count % AUTOSAVE_FRAMES == 0 && gnuboy_sram_dirty())
-        gnuboy_save_sram(s_sav_path, false);
+    while (completed-- > 0) {
+        if (++s_frame_count % AUTOSAVE_FRAMES == 0 && gnuboy_sram_dirty())
+            gnuboy_save_sram(s_sav_path, false);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,9 +403,30 @@ static void pend(int a) {
     lv_async_call(pendDispatch, nullptr);
 }
 
+static void finishPendingSerial(void) {
+    s_wifi_link.cancelTransfers();
+    if (s_core_initialized && gnuboy_serial_waiting())
+        gnuboy_serial_complete(0xFF);
+}
+
+static void setLinkRole(GameBoyWifiLink::Role role) {
+    finishPendingSerial();
+    if (role == GameBoyWifiLink::Role::Off) s_wifi_link.stop();
+    else {
+        s_wifi_link.start(role, s_rom_id);
+        if (s_core_initialized) gnuboy_serial_rearm();
+    }
+    updateLinkStatus(true);
+}
+
 static void miResumeCb(lv_event_t*) { pend(PEND_RESUME); }
-static void miSaveCb  (lv_event_t*) { gnuboy_save_state(s_sta_path); pend(PEND_RESUME); }
+static void miSaveCb  (lv_event_t*) {
+    finishPendingSerial();
+    gnuboy_save_state(s_sta_path);
+    pend(PEND_RESUME);
+}
 static void miLoadCb  (lv_event_t*) {
+    finishPendingSerial();
     // A failed read may reflect an SD I/O fault after the validated header.
     // Restore a known-good machine instead of continuing with partly loaded RAM.
     if (gnuboy_load_state(s_sta_path) < 0) {
@@ -392,17 +435,34 @@ static void miLoadCb  (lv_event_t*) {
     }
     pend(PEND_RESUME);
 }
-static void miResetCb (lv_event_t*) { gnuboy_reset(true); pend(PEND_RESUME); }
+static void miResetCb (lv_event_t*) {
+    finishPendingSerial();
+    gnuboy_reset(true);
+    pend(PEND_RESUME);
+}
 static void miDispCb  (lv_event_t*) {
     s_scale_mode = (ScaleMode)((s_scale_mode + 1) % 3);   // 1x -> Fit -> Int2x
     pend(PEND_DISPLAY);
 }
 static void miSoundCb (lv_event_t*) { if (s_audio_ok) audioStop(); else audioStart(); pend(PEND_RESUME); }
+static void miLinkHostCb(lv_event_t*) { setLinkRole(GameBoyWifiLink::Role::Host); }
+static void miLinkJoinCb(lv_event_t*) { setLinkRole(GameBoyWifiLink::Role::Join); }
+static void miLinkOffCb (lv_event_t*) { setLinkRole(GameBoyWifiLink::Role::Off); }
 static void miExitCb  (lv_event_t*) { pend(PEND_EXIT); }
 
 static void menuRow(lv_obj_t* list, const char* icon, const char* text, lv_event_cb_t cb) {
     lv_obj_t* b = lv_list_add_btn(list, icon, text);
     lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+}
+
+static void updateLinkStatus(bool force) {
+    if (!s_link_status) return;
+    const uint32_t revision = s_wifi_link.revision();
+    if (!force && revision == s_link_status_revision) return;
+    char status[96];
+    s_wifi_link.statusText(status, sizeof(status));
+    lv_label_set_text(s_link_status, status);
+    s_link_status_revision = revision;
 }
 
 static void buildMenu(void) {
@@ -431,11 +491,19 @@ static void buildMenu(void) {
     menuRow(list, LV_SYMBOL_IMAGE,   disp,         miDispCb);
     menuRow(list, s_audio_ok ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_MUTE,
                   s_audio_ok ? "Sound: On" : "Sound: Off", miSoundCb);
+    menuRow(list, LV_SYMBOL_WIFI, "Host GB link", miLinkHostCb);
+    menuRow(list, LV_SYMBOL_WIFI, "Join GB link", miLinkJoinCb);
+    menuRow(list, LV_SYMBOL_CLOSE, "Turn link off", miLinkOffCb);
+    s_link_status = lv_list_add_text(list, "");
+    s_link_status_revision = UINT32_MAX;
+    updateLinkStatus(true);
     menuRow(list, LV_SYMBOL_CLOSE,   "Exit",       miExitCb);
 }
 
 static void closeMenu(void) {
     if (s_menu) { lv_obj_del(s_menu); s_menu = nullptr; }
+    s_link_status = nullptr;
+    s_link_status_revision = UINT32_MAX;
     s_paused = false;
     s_next_us = micros();
 }
@@ -518,6 +586,8 @@ static void buildPlayUI(void) {
 // ---------------------------------------------------------------------------
 static void teardownEmu(void) {
     if (s_timer) { lv_timer_del(s_timer); s_timer = nullptr; }
+    finishPendingSerial();
+    s_wifi_link.stop();
     audioStop();                            // frameCb is gone -> no more audio_cb
     if (s_playing) {
         gnuboy_save_state(s_sta_path);          // auto-suspend: resume where we left off
@@ -531,6 +601,7 @@ static void teardownEmu(void) {
         s_core_initialized = false;
     }
     s_rom_loaded = false;
+    s_rom_id = 0;
 }
 
 static bool loadRomToPsram(const char* sd_path, uint8_t** out, size_t* out_size) {
@@ -550,6 +621,15 @@ static bool loadRomToPsram(const char* sd_path, uint8_t** out, size_t* out_size)
     if (got != sz) { free(buf); return false; }
     *out = buf; *out_size = sz;
     return true;
+}
+
+static uint32_t fingerprintRom(const uint8_t* data, size_t size) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < size; i++) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash ? hash : 1u;
 }
 
 static void makeSidePath(const char* sd_path, const char* ext, char* out, size_t cap) {
@@ -580,12 +660,14 @@ static void startRom(const char* sd_path) {
 
     size_t rom_sz = 0;
     if (!loadRomToPsram(sd_path, &s_rom, &rom_sz)) { GameBoy::close(); return; }
+    s_rom_id = fingerprintRom(s_rom, rom_sz);
     makeSidePath(sd_path, ".sav", s_sav_path, sizeof(s_sav_path));
     makeSidePath(sd_path, ".sta", s_sta_path, sizeof(s_sta_path));
 
     if (gnuboy_init(AUDIO_RATE, GB_AUDIO_MONO_S16, GB_PIXEL_565_LE,
                     video_cb, audio_cb) < 0) { GameBoy::close(); return; }
     s_core_initialized = true;
+    gnuboy_set_serial_callback(touchGbSerialStart);
     gnuboy_set_framebuffer(s_gbfb);
     gnuboy_set_soundbuffer(s_abuf, ABUF_LEN);
     if (gnuboy_load_rom(s_rom, rom_sz) < 0) { GameBoy::close(); return; }
@@ -702,6 +784,17 @@ void GameBoy::launch() {
     buildPicker();
 }
 
+void GameBoy::service() {
+    if (!s_wifi_link.active()) return;
+    s_wifi_link.service(millis());
+    if (s_core_initialized) {
+        uint8_t incoming = 0xFF;
+        if (s_wifi_link.takeCompleted(incoming))
+            gnuboy_serial_complete(incoming);
+    }
+    updateLinkStatus();
+}
+
 bool GameBoy::isOpen() { return s_root != nullptr; }
 bool GameBoy::isRunning() { return s_playing && !s_paused; }
 
@@ -745,6 +838,8 @@ static void closeDispatch(void*) {
     s_close_pending = false;
     teardownEmu();
     if (s_menu) { lv_obj_del(s_menu); s_menu = nullptr; }
+    s_link_status = nullptr;
+    s_link_status_revision = UINT32_MAX;
     if (s_root) { lv_obj_del(s_root); s_root = nullptr; }   // deletes play-UI + children
     s_picker = nullptr; s_play = nullptr; s_canvas = nullptr; s_menu_btn = nullptr;
     if (s_fb)   { lvglPsramFree(s_fb);   s_fb = nullptr; }   // after the canvas is gone
@@ -768,6 +863,7 @@ void GameBoy::close() {
 #else  // no supported SD/input path; stub the player.
 
 void GameBoy::launch()          {}
+void GameBoy::service()         {}
 bool GameBoy::isOpen()          { return false; }
 bool GameBoy::isRunning()       { return false; }
 void GameBoy::steer(int, int)   {}

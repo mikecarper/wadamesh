@@ -11,6 +11,56 @@ gb_t GB;
 
 #define hw GB
 
+static gb_serial_start_cb_t *serial_start_callback;
+static bool serial_waiting;
+
+void gnuboy_set_serial_callback(gb_serial_start_cb_t *callback)
+{
+	serial_start_callback = callback;
+	if (!callback)
+		gnuboy_serial_cancel();
+}
+
+bool gnuboy_serial_waiting(void)
+{
+	return serial_waiting;
+}
+
+bool gnuboy_serial_rearm(void)
+{
+	if (serial_waiting)
+		return true;
+	if (!(R_SC & 0x80) || !serial_start_callback)
+		return false;
+	serial_waiting = true;
+	if (serial_start_callback(R_SB, (R_SC & 0x01) != 0))
+	{
+		hw.serial = 0;
+		return true;
+	}
+	serial_waiting = false;
+	return false;
+}
+
+void gnuboy_serial_complete(uint8_t incoming)
+{
+	if (!serial_waiting)
+		return;
+	serial_waiting = false;
+	hw.serial = 0;
+	R_SB = incoming;
+	R_SC &= 0x7f;
+	gb_hw_interrupt(IF_SERIAL, 1);
+	gb_hw_interrupt(IF_SERIAL, 0);
+}
+
+void gnuboy_serial_cancel(void)
+{
+	serial_waiting = false;
+	hw.serial = 0;
+	R_SC &= 0x7f;
+}
+
 static void rtc_latch(byte b)
 {
 	if ((cart.rtc.latch ^ b) & b & 1)
@@ -227,6 +277,7 @@ bool gb_hw_init(void)
 
 void gb_hw_reset(bool hard)
 {
+	serial_waiting = false;
 	hw.ilines = 0;
 	hw.serial = 0;
 	hw.hdma = 0;
@@ -541,11 +592,14 @@ void gb_hw_write(unsigned a, byte b)
 				REG(r) = b;
 				break;
 			case RI_SC:
+				REG(r) = b; /* & 0x7f; */
+				serial_waiting = false;
+				if (gnuboy_serial_rearm())
+					break;
 				if ((b & 0x81) == 0x81)
 					hw.serial = 1952; // 8 * 122us;
 				else
 					hw.serial = 0;
-				REG(r) = b; /* & 0x7f; */
 				break;
 			case RI_DIV:
 				REG(r) = 0;

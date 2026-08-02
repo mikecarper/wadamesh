@@ -47254,6 +47254,9 @@ static void sdHealthTick() {
 
 void UITask::loop() {
   unsigned long now = millis();
+  // UDP link service is bounded and non-blocking. The main loop returns to
+  // the_mesh.loop() after UI work, so LoRa RX stays armed during gameplay.
+  GameBoy::service();
 #if defined(ESP32)
   // Snapshot copying is quick; all filesystem I/O runs on the core-0 worker.
   touchPrefsTick(now);

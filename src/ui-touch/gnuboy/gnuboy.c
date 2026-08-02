@@ -13,11 +13,17 @@
 
 #define BANK_SIZE 0x4000
 
+static bool frame_in_progress;
+static bool frame_visible_done;
+
 
 // Note: Eventually we'll just pass a gb_host_t to init...
 // But for now assume it's been configured before we were alled!
 void gnuboy_deinit(void)
 {
+	gnuboy_set_serial_callback(NULL);
+	frame_in_progress = false;
+	frame_visible_done = false;
 	gnuboy_free_rom();
 	gnuboy_free_bios();
 	free(GB.rambanks);
@@ -55,6 +61,9 @@ int gnuboy_init(int samplerate, gb_audio_fmt_t audio_fmt, gb_video_fmt_t video_f
  */
 void gnuboy_reset(bool hard)
 {
+	gnuboy_serial_cancel();
+	frame_in_progress = false;
+	frame_visible_done = false;
 	gb_hw_reset(hard);
 	gb_lcd_reset(hard);
 	gb_cpu_reset(hard);
@@ -93,10 +102,23 @@ void gnuboy_set_soundbuffer(void *buffer, size_t length)
 		visible lines x144 = 32832 dsc (15.66ms)
 		vblank lines x10 = 2280 dsc (1.08ms)
 */
-void gnuboy_run(bool draw)
+bool gnuboy_run(bool draw)
 {
-	GB.video.enabled = draw;
-	GB.audio.pos = 0;
+	if (!frame_in_progress)
+	{
+		GB.video.enabled = draw;
+		GB.audio.pos = 0;
+		frame_in_progress = true;
+		frame_visible_done = false;
+	}
+	else if (draw)
+	{
+		/* A yielded catch-up frame may become the next visible host frame. */
+		GB.video.enabled = true;
+	}
+
+	if (gnuboy_serial_waiting())
+		return false;
 
 	int cycles = 0;
 
@@ -104,32 +126,46 @@ void gnuboy_run(bool draw)
 	if (!(R_LCDC & 0x80)) {
 		cycles += 154 * 228;
 		cycles -= gb_cpu_emulate(cycles);
-		return;
+		frame_in_progress = false;
+		frame_visible_done = false;
+		return true;
 	}
 
 	// We emulate until vblank (0..144)
-	while (R_LY <= 144) {
-		cycles += 228;
-		cycles -= gb_cpu_emulate(cycles);
-	}
+	if (!frame_visible_done)
+	{
+		while (R_LY <= 144) {
+			cycles += 228;
+			cycles -= gb_cpu_emulate(cycles);
+			if (gnuboy_serial_waiting())
+				return false;
+		}
 
-	/* When using GB_PIXEL_PALETTED, the host should draw the frame in this callback
-	   because the palette can be modified below before gnuboy_run returns. */
-	if (draw && GB.video.callback) {
-		(GB.video.callback)(GB.video.buffer);
-	}
+		/* When using GB_PIXEL_PALETTED, the host should draw the frame in this callback
+		   because the palette can be modified below before gnuboy_run returns. */
+		if (GB.video.enabled && GB.video.callback) {
+			(GB.video.callback)(GB.video.buffer);
+		}
 
-	gb_hw_vblank();
+		gb_hw_vblank();
+		frame_visible_done = true;
+	}
 
 	// Emulate vblank (145...0)
 	while (R_LY > 0) {
 		cycles += 228;
 		cycles -= gb_cpu_emulate(cycles);
+		if (gnuboy_serial_waiting())
+			return false;
 	}
 
 	if (GB.audio.callback && GB.audio.pos > 0) {
 		(GB.audio.callback)(GB.audio.buffer, GB.audio.pos);
 	}
+
+	frame_in_progress = false;
+	frame_visible_done = false;
+	return true;
 }
 
 
@@ -982,5 +1018,13 @@ int gnuboy_save_state(const char *file)
 
 int gnuboy_load_state(const char *file)
 {
-	return do_save_load(file, false);
+	int result = do_save_load(file, false);
+	if (result == 0)
+	{
+		/* Link transport state is host-owned and is not part of save states. */
+		gnuboy_serial_cancel();
+		frame_in_progress = false;
+		frame_visible_done = false;
+	}
+	return result;
 }

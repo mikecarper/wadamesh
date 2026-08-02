@@ -14,10 +14,11 @@
 //      servicing the mesh between ticks). Input: on-screen touch pad, plus the
 //      trackball (D-pad + click=A) and keyboard (WASD + keys). Audio is muted by
 //      default (toggle in-game); battery saves live next to the ROM as <name>.sav.
-//      T-Deck only (needs SD + input); the V4 build stubs it out.
+//      T-Deck and T-Pager (need SD + input); unsupported builds stub it out.
 class GameBoy {
 public:
   static void launch();               // open the picker (no-op if already open)
+  static void service();              // non-blocking WiFi link service
   static bool isOpen();               // UITask: gate tab bar + trackball nav
   static bool isRunning();            // true while gameplay owns directional input
   static void steer(int dx, int dy);  // UITask: trackball motion -> D-pad pulse
