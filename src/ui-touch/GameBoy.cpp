@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "GameBoy.h"
 
-#if defined(HAS_TDECK_GT911)
+#if defined(HAS_TDECK_GT911) || defined(TLORA_PAGER)
 
 #include <Arduino.h>          // millis/micros, ps_malloc
 #include <SD.h>               // ROM listing + read (T-Deck microSD)
@@ -28,6 +28,10 @@ extern "C" {
 
 // Bridge to UITask's shared-SPI microSD mounter (UITask internals are static).
 extern "C" bool touchGbSdEnsureMounted();
+// Board-aware audio bridge. T-Deck drives its MAX98357A directly; T-Pager also
+// needs its ES8311 codec and amplifier powered/configured around the I2S stream.
+extern "C" bool touchGbAudioStart(int sample_rate);
+extern "C" void touchGbAudioStop();
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -43,17 +47,8 @@ static constexpr size_t     MAX_ROM_BYTES = 4u * 1024 * 1024;  // sanity cap
 static constexpr uint32_t   PULSE_MS   = 130;     // trackball/keyboard pad-tap hold
 static constexpr size_t     AUDIO_SB_BYTES = 16384;  // ~370 ms @ 22050 Hz mono S16
 
-// I2S audio — same MAX98357A wiring as UITask's notification tones (mono amp).
-// GB owns I2S_NUM_0 only while unmuted; the notify path is gated off meanwhile.
-#ifndef PIN_I2S_BCK
-  #define PIN_I2S_BCK  7
-#endif
-#ifndef PIN_I2S_WS
-  #define PIN_I2S_WS   5
-#endif
-#ifndef PIN_I2S_DOUT
-  #define PIN_I2S_DOUT 6
-#endif
+// GB owns I2S_NUM_0 only while unmuted; notification playback is gated while
+// the app is open so the two users cannot install the peripheral concurrently.
 static constexpr i2s_port_t kGbI2sPort          = I2S_NUM_0;
 static constexpr int        AUDIO_WARMUP_FRAMES = 45;   // swallow startup garble
 
@@ -74,8 +69,14 @@ static lv_timer_t* s_timer     = nullptr;
 static uint8_t*    s_rom        = nullptr;  // full ROM in PSRAM (banks point into it)
 static bool        s_playing    = false;
 static bool        s_rom_loaded = false;    // gnuboy_load_rom succeeded (own the banks)
+static bool        s_core_initialized = false;
 static bool        s_paused     = false;    // menu open -> emulation halted
+static bool        s_close_pending = false; // close requested from an LVGL child callback
+#if defined(TLORA_PAGER)
+static ScaleMode   s_scale_mode = SCALE_FIT; // keyboard-driven; favor a larger image
+#else
 static ScaleMode   s_scale_mode = SCALE_1X;
+#endif
 
 static int         s_out_w = GB_WIDTH, s_out_h = GB_HEIGHT;  // canvas size
 static uint8_t     s_sx_map[320];           // out col -> source col (0..159)
@@ -100,6 +101,7 @@ static StaticStreamBuffer_t s_audio_sb_ctl;
 static uint8_t*            s_audio_store  = nullptr; // PSRAM backing for the stream
 static TaskHandle_t        s_audio_task   = nullptr;
 static volatile bool       s_audio_run    = false;
+static volatile bool       s_audio_exited = true;
 
 // ROM catalogue (phase 1 -> phase 2 hand-off)
 static char        s_rom_paths[MAX_ROMS][128]; // SD path, e.g. /meshcomod/gb/x.gb
@@ -113,6 +115,7 @@ static void teardownPlayUI(void);
 static void audioStart(void);
 static void audioStop(void);
 static void closeMenu(void);
+static void closeDispatch(void*);
 
 // ---------------------------------------------------------------------------
 // Rendering: gnuboy renders into s_gbfb (160x144). Scale it into the canvas
@@ -175,8 +178,9 @@ static void audio_cb(void* buffer, size_t length) {
     // Scale by the volume pref and hand off to the audio task via the stream
     // buffer. Non-blocking (drop on full) so the frame is never stalled here.
     if (!s_audio_ok || s_audio_warmup > 0 || length == 0 || !s_audio_sb) return;
-    const int vol = (int)touchPrefsGetSoundVolume();   // 0..100
+    int vol = (int)touchPrefsGetSoundVolume();   // 0..100
     if (vol <= 0) return;
+    if (vol > 100) vol = 100;
     int16_t* s = (int16_t*)buffer;
     if (vol < 100)
         for (size_t i = 0; i < length; i++) s[i] = (int16_t)((int)s[i] * vol / 100);
@@ -194,14 +198,18 @@ static void audioTaskFn(void*) {
         // On empty (timeout) write nothing: tx_desc_auto_clear zeroes the DMA, so
         // an underrun is clean silence. Feeding our own silence chunks mid-stream
         // was itself a click source. Write ALL received bytes (portMAX) so a
-        // partial i2s_write can't drop the tail — the other click source.
+        // partial i2s_write can't drop the tail — the other click source. A
+        // finite timeout is essential: audioStop() must be able to join this
+        // task before it releases the stream buffer and I2S driver.
         size_t off = 0;
         while (off < got && s_audio_run) {
             size_t w = 0;
-            if (i2s_write(kGbI2sPort, buf + off, got - off, &w, portMAX_DELAY) != ESP_OK) break;
+            if (i2s_write(kGbI2sPort, buf + off, got - off, &w,
+                          pdMS_TO_TICKS(20)) != ESP_OK || w == 0) break;
             off += w;
         }
     }
+    s_audio_exited = true;
     s_audio_task = nullptr;
     vTaskDelete(nullptr);
 }
@@ -210,46 +218,27 @@ static void audioTaskFn(void*) {
 // I2S + audio task lifecycle — up only while unmuted (muted by default).
 // ---------------------------------------------------------------------------
 static void audioStart(void) {
+    if (s_audio_ok) return;
     s_audio_ok = false;
     s_audio_warmup = AUDIO_WARMUP_FRAMES;
-    // Skip audio if internal DMA RAM is too tight — mirrors UITask's
-    // i2s_driver_install pre-flight so we don't trip its NO_MEM abort.
-    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 16 * 1024) return;
-
-    i2s_config_t cfg = {};
-    cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
-    cfg.sample_rate = AUDIO_RATE;
-    cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-    cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;   // MAX98357A is mono
-    cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-    cfg.intr_alloc_flags = 0;
-    cfg.dma_buf_count = 6;
-    cfg.dma_buf_len = 256;
-    cfg.tx_desc_auto_clear = true;
-    cfg.use_apll = true;                        // accurate 22050 Hz -> less drift/crackle
-    if (i2s_driver_install(kGbI2sPort, &cfg, 0, nullptr) != ESP_OK) {
-        cfg.use_apll = false;                  // APLL unavailable on this clock -> fall back
-        if (i2s_driver_install(kGbI2sPort, &cfg, 0, nullptr) != ESP_OK) return;
-    }
-    i2s_pin_config_t pins = {};
-    pins.mck_io_num   = I2S_PIN_NO_CHANGE;
-    pins.bck_io_num   = PIN_I2S_BCK;
-    pins.ws_io_num    = PIN_I2S_WS;
-    pins.data_out_num = PIN_I2S_DOUT;
-    pins.data_in_num  = I2S_PIN_NO_CHANGE;
-    if (i2s_set_pin(kGbI2sPort, &pins) != ESP_OK) { i2s_driver_uninstall(kGbI2sPort); return; }
-
     s_audio_store = (uint8_t*)ps_malloc(AUDIO_SB_BYTES + 1);
-    if (!s_audio_store) { i2s_driver_uninstall(kGbI2sPort); return; }
+    if (!s_audio_store) return;
     s_audio_sb = xStreamBufferCreateStatic(AUDIO_SB_BYTES, 1, s_audio_store, &s_audio_sb_ctl);
-    if (!s_audio_sb) { free(s_audio_store); s_audio_store = nullptr; i2s_driver_uninstall(kGbI2sPort); return; }
-
-    s_audio_run = true;
-    if (xTaskCreatePinnedToCore(audioTaskFn, "gbaudio", 4096, nullptr, 3, &s_audio_task, 1) != pdPASS) {
-        s_audio_run = false;
+    if (!s_audio_sb) { free(s_audio_store); s_audio_store = nullptr; return; }
+    if (!touchGbAudioStart(AUDIO_RATE)) {
         vStreamBufferDelete(s_audio_sb); s_audio_sb = nullptr;
         free(s_audio_store); s_audio_store = nullptr;
-        i2s_driver_uninstall(kGbI2sPort);
+        return;
+    }
+
+    s_audio_run = true;
+    s_audio_exited = false;
+    if (xTaskCreatePinnedToCore(audioTaskFn, "gbaudio", 4096, nullptr, 3, &s_audio_task, 1) != pdPASS) {
+        s_audio_run = false;
+        s_audio_exited = true;
+        vStreamBufferDelete(s_audio_sb); s_audio_sb = nullptr;
+        free(s_audio_store); s_audio_store = nullptr;
+        touchGbAudioStop();
         return;
     }
     s_audio_ok = true;
@@ -261,10 +250,17 @@ static void audioStop(void) {
     s_audio_ok = false;
     gnuboy_set_mute(true);                         // stop synthesizing while silent
     s_audio_run = false;                          // ask the task to exit
-    for (int i = 0; i < 60 && s_audio_task; i++)  // wait for it (bounded ~300 ms)
+    TaskHandle_t task = s_audio_task;
+    for (int i = 0; i < 60 && !s_audio_exited; i++)  // bounded join (~300 ms)
         vTaskDelay(pdMS_TO_TICKS(5));
-    i2s_zero_dma_buffer(kGbI2sPort);
-    i2s_driver_uninstall(kGbI2sPort);
+    // The finite I2S timeout above should always let the task exit. Retain a
+    // hard stop for a damaged driver so buffers are never freed under a live task.
+    if (!s_audio_exited && task) {
+        vTaskDelete(task);
+        s_audio_task = nullptr;
+        s_audio_exited = true;
+    }
+    touchGbAudioStop();
     if (s_audio_sb)    { vStreamBufferDelete(s_audio_sb); s_audio_sb = nullptr; }
     if (s_audio_store) { free(s_audio_store); s_audio_store = nullptr; }
 }
@@ -278,6 +274,7 @@ static void frameCb(lv_timer_t* /*t*/) {
 
     const uint32_t now = micros();
     int32_t behind = (int32_t)(now - s_next_us);
+    if (behind < 0) return;                    // not due yet; never run faster than hardware
     if (behind > (int32_t)(8 * FRAME_US)) {   // hopelessly behind -> resync
         s_next_us = now;
         behind = 0;
@@ -335,6 +332,18 @@ static void buildControls(void) {
     // Game canvas is on the RIGHT (see buildPlayUI). D-pad on the left, A/B
     // directly under the game, Start/Select bottom-left under the D-pad.
     const uint32_t kDpad = 0x2B2F36, kAB = 0x8A3A46, kSS = 0x30343B;
+#if defined(TLORA_PAGER)
+    // The Pager is 480x222 landscape (200 px below the status bar). Keep every
+    // control inside that shorter viewport; its keyboard remains the primary pad.
+    makePadBtn(s_play, 50,  8,  44, 36, LV_SYMBOL_UP,    GB_PAD_UP,    kDpad);
+    makePadBtn(s_play, 10, 46,  44, 40, LV_SYMBOL_LEFT,  GB_PAD_LEFT,  kDpad);
+    makePadBtn(s_play, 90, 46,  44, 40, LV_SYMBOL_RIGHT, GB_PAD_RIGHT, kDpad);
+    makePadBtn(s_play, 50, 88,  44, 36, LV_SYMBOL_DOWN,  GB_PAD_DOWN,  kDpad);
+    makePadBtn(s_play, 180, 50, 56, 52, "B", GB_PAD_B, kAB);
+    makePadBtn(s_play, 250, 50, 56, 52, "A", GB_PAD_A, kAB);
+    makePadBtn(s_play, 318, 158, 74, 38, "START",  GB_PAD_START,  kSS);
+    makePadBtn(s_play, 400, 158, 74, 38, "SELECT", GB_PAD_SELECT, kSS);
+#else
     // D-pad cross — left side, mid.
     makePadBtn(s_play, 48,  40,  46, 40, LV_SYMBOL_UP,    GB_PAD_UP,    kDpad);
     makePadBtn(s_play, 10,  82,  46, 44, LV_SYMBOL_LEFT,  GB_PAD_LEFT,  kDpad);
@@ -347,6 +356,7 @@ static void buildControls(void) {
     // press (ends y166) can't clip the top of START.
     makePadBtn(s_play, 8,   188, 66, 28, "START",  GB_PAD_START,  kSS);
     makePadBtn(s_play, 80,  188, 66, 28, "SELECT", GB_PAD_SELECT, kSS);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -365,11 +375,23 @@ static void pendDispatch(void*) {
         default: break;
     }
 }
-static void pend(int a) { s_pend = a; lv_async_call(pendDispatch, nullptr); }
+static void pend(int a) {
+    if (s_pend != PEND_NONE) return;
+    s_pend = a;
+    lv_async_call(pendDispatch, nullptr);
+}
 
 static void miResumeCb(lv_event_t*) { pend(PEND_RESUME); }
 static void miSaveCb  (lv_event_t*) { gnuboy_save_state(s_sta_path); pend(PEND_RESUME); }
-static void miLoadCb  (lv_event_t*) { gnuboy_load_state(s_sta_path); pend(PEND_RESUME); }
+static void miLoadCb  (lv_event_t*) {
+    // A failed read may reflect an SD I/O fault after the validated header.
+    // Restore a known-good machine instead of continuing with partly loaded RAM.
+    if (gnuboy_load_state(s_sta_path) < 0) {
+        gnuboy_reset(true);
+        gnuboy_load_sram(s_sav_path);
+    }
+    pend(PEND_RESUME);
+}
 static void miResetCb (lv_event_t*) { gnuboy_reset(true); pend(PEND_RESUME); }
 static void miDispCb  (lv_event_t*) {
     s_scale_mode = (ScaleMode)((s_scale_mode + 1) % 3);   // 1x -> Fit -> Int2x
@@ -420,6 +442,12 @@ static void closeMenu(void) {
 
 static void openMenuCb(lv_event_t*) {
     if (s_menu) return;
+    s_paused = true;
+    buildMenu();
+}
+
+static void openMenu(void) {
+    if (s_menu || !s_playing) return;
     s_paused = true;
     buildMenu();
 }
@@ -498,7 +526,11 @@ static void teardownEmu(void) {
     }
     // Free the emulator's banks even if we never reached play (e.g. buildPlayUI
     // OOM'd before s_playing was set) — otherwise gnuboy's rambanks/rombanks leak.
-    if (s_rom_loaded) { gnuboy_free_rom(); s_rom_loaded = false; }
+    if (s_core_initialized) {
+        gnuboy_deinit();
+        s_core_initialized = false;
+    }
+    s_rom_loaded = false;
 }
 
 static bool loadRomToPsram(const char* sd_path, uint8_t** out, size_t* out_size) {
@@ -531,7 +563,15 @@ static void makeSidePath(const char* sd_path, const char* ext, char* out, size_t
 }
 
 static void startRom(const char* sd_path) {
-    if (s_picker) { lv_obj_del(s_picker); s_picker = nullptr; }
+    // romPickCb runs from a button that is a child of this list. Deleting the
+    // list synchronously here frees LVGL's active event source mid-dispatch.
+    // Queue the old picker instead; the play UI is appended above it and the
+    // deletion completes before the next LVGL event.
+    if (s_picker) {
+        lv_obj_t* old_picker = s_picker;
+        s_picker = nullptr;
+        lv_obj_del_async(old_picker);
+    }
 
     // gnuboy's fixed 160x144 framebuffer (RGB565 LE == lv_color_t); the canvas
     // buffer is separate so it can be scaled without touching the emulator.
@@ -545,9 +585,10 @@ static void startRom(const char* sd_path) {
 
     if (gnuboy_init(AUDIO_RATE, GB_AUDIO_MONO_S16, GB_PIXEL_565_LE,
                     video_cb, audio_cb) < 0) { GameBoy::close(); return; }
+    s_core_initialized = true;
     gnuboy_set_framebuffer(s_gbfb);
     gnuboy_set_soundbuffer(s_abuf, ABUF_LEN);
-    if (gnuboy_load_rom(s_rom, rom_sz) < 0) { gnuboy_free_rom(); GameBoy::close(); return; }
+    if (gnuboy_load_rom(s_rom, rom_sz) < 0) { GameBoy::close(); return; }
     s_rom_loaded = true;
     gnuboy_reset(true);
     // Auto-resume the prior session; on a missing/corrupt/mismatched .sta, fall
@@ -561,7 +602,7 @@ static void startRom(const char* sd_path) {
     gnuboy_set_mute(true);         // muted by default; the Sound menu item unmutes
 
     buildPlayUI();                 // muted by default -> no audioStart here
-    if (!s_play) return;           // buildPlayUI failed + already closed
+    if (!s_play || s_close_pending) return; // buildPlayUI failed + queued a safe close
 
     s_pad_touch = 0; s_click_a = false; s_pulse_mask = 0; s_pulse_until = 0;
     s_paused = false; s_frame_count = 0;
@@ -586,8 +627,11 @@ static void scanDir(const char* dir) {
         if (!f.isDirectory()) {
             const char* n = f.name();
             const char* base = strrchr(n, '/'); base = base ? base + 1 : n;
-            if (hasRomExt(base))
-                snprintf(s_rom_paths[s_rom_count++], sizeof(s_rom_paths[0]), "%s/%s", dir, base);
+            if (hasRomExt(base)) {
+                const int npath = snprintf(s_rom_paths[s_rom_count], sizeof(s_rom_paths[0]),
+                                           "%s/%s", dir, base);
+                if (npath > 0 && (size_t)npath < sizeof(s_rom_paths[0])) s_rom_count++;
+            }
         }
         f.close();
     }
@@ -659,6 +703,7 @@ void GameBoy::launch() {
 }
 
 bool GameBoy::isOpen() { return s_root != nullptr; }
+bool GameBoy::isRunning() { return s_playing && !s_paused; }
 
 void GameBoy::steer(int dx, int dy) {
     if (!s_playing || s_paused) return;
@@ -671,8 +716,14 @@ void GameBoy::steer(int dx, int dy) {
 
 void GameBoy::setA(bool down) { s_click_a = (down && !s_paused); }
 
-void GameBoy::keyChar(char c) {
-    if (!s_playing || s_paused) return;
+bool GameBoy::keyChar(char c) {
+    if (!s_root) return false;
+    if (s_paused) {
+        if (c == '\b' || c == 0x1B) { closeMenu(); return true; }
+        return false;   // let the board's normal focus navigation drive the menu
+    }
+    if (!s_playing) return false;     // ROM picker is ordinary LVGL navigation
+    if (c == '\b' || c == 0x1B) { openMenu(); return true; }
     int bit = 0;
     switch (c) {
         case 'w': case 'W': bit = GB_PAD_UP;    break;
@@ -683,13 +734,15 @@ void GameBoy::keyChar(char c) {
         case 'j': case 'J': case 'n': case 'N': bit = GB_PAD_B;      break;
         case '\r': case '\n':                   bit = GB_PAD_START;  break;
         case ' ':                               bit = GB_PAD_SELECT; break;
-        default: return;
+        default: return true;         // game owns input; never leak keys to the UI behind it
     }
     s_pulse_mask |= bit;
     s_pulse_until = millis() + PULSE_MS;
+    return true;
 }
 
-void GameBoy::close() {
+static void closeDispatch(void*) {
+    s_close_pending = false;
     teardownEmu();
     if (s_menu) { lv_obj_del(s_menu); s_menu = nullptr; }
     if (s_root) { lv_obj_del(s_root); s_root = nullptr; }   // deletes play-UI + children
@@ -698,15 +751,28 @@ void GameBoy::close() {
     if (s_gbfb) { lvglPsramFree(s_gbfb); s_gbfb = nullptr; }
     if (s_rom)  { free(s_rom); s_rom = nullptr; }            // banks pointed into it; free_rom left it
     s_pad_touch = 0; s_click_a = false; s_pulse_mask = 0; s_paused = false;
+    s_pend = PEND_NONE;
 }
 
-#else  // !HAS_TDECK_GT911 — no SD / input on the V4; stub the player.
+void GameBoy::close() {
+    if (s_close_pending) return;
+    if (!s_root && !s_playing && !s_core_initialized && !s_rom && !s_gbfb && !s_fb) return;
+    // Close is reached from the ROM-list X, a ROM-row callback on load failure,
+    // and the in-game menu. Defer the actual object deletion and buffer release
+    // so no path can free an LVGL event source while LVGL is still dispatching it.
+    s_close_pending = true;
+    s_paused = true;                       // stop useful work until the async close runs
+    lv_async_call(closeDispatch, nullptr);
+}
+
+#else  // no supported SD/input path; stub the player.
 
 void GameBoy::launch()          {}
 bool GameBoy::isOpen()          { return false; }
+bool GameBoy::isRunning()       { return false; }
 void GameBoy::steer(int, int)   {}
 void GameBoy::setA(bool)        {}
-void GameBoy::keyChar(char)     {}
+bool GameBoy::keyChar(char)     { return false; }
 void GameBoy::close()           {}
 
 #endif

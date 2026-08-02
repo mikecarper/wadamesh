@@ -20,6 +20,10 @@ Local modifications:
 - `sound.c` / `gnuboy.h`: added `gnuboy_set_mute(bool)` — when muted, `gb_sound_emulate`
   drains accumulated cycles and emits no samples instead of synthesizing all four
   channels (perf; audio is muted by default in the player). CPU/PPU timing unchanged.
+- `gnuboy.c` / `gnuboy.h`: added an explicit core teardown path so reopening the app
+  releases ROM-bank tables, BIOS, work RAM, and VRAM rather than leaking each session.
+- `gnuboy.c`: hardened ROM-size validation, save-state header/length/version checks,
+  exact I/O handling, BIOS failure cleanup, and multi-bank SRAM load/save bookkeeping.
 
 Build note: the gnuboy `.c` files are compiled at `-O2` with jump tables restored via
 `scripts/gnuboy_opt.py` (the Arduino-S3 default is `-Os -fno-jump-tables`, poor for the

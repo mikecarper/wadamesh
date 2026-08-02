@@ -109,6 +109,7 @@
 #include "ChannelUtil.h"      // Apps → Airtime (self-contained channel-utilization tool)
 #include "AppPage.h"          // shared full-screen app-page chrome (both of the above use it)
 #include "GameBoy.h"          // Apps → Game Boy (gnuboy core, self-contained)
+#include "ArtilleryGame.h"    // Apps → Artillery (Scorched-style mini-game)
 
 #if defined(HAS_TOUCH_UI)
   #include <lvgl.h>
@@ -932,6 +933,39 @@ static volatile int  s_notify_slot    = TOUCH_SND_MSG;   // which per-event soun
 static char          s_notify_path[TOUCH_SOUND_PATH_MAXLEN] = {0};   // caller-resolved WAV path (avoid NVS in the task)
 static volatile int  s_notify_vol     = 9000;    // meaning is board-specific: T-Deck = software amplitude, pager = 0-100 hw volume pct
 
+// Game Boy's audio worker lives in its own translation unit, but I2S bring-up
+// is board-specific here: the Pager also needs MCLK, ES8311 setup and AMP_EN.
+// Keep one owner for that hardware instead of duplicating a T-Deck-only setup.
+extern "C" bool touchGbAudioStart(int sample_rate) {
+  if (s_notify_playing) return false;
+#if defined(HAS_TDECK_GT911)
+  return tdeckAudioInstallRate(sample_rate);
+#elif defined(TLORA_PAGER)
+  board.setAmpEnabled(true);
+  if (!pagerAudioInstallRate(sample_rate)) {
+    board.setAmpEnabled(false);
+    return false;
+  }
+  // GameBoy.cpp applies the saved volume in software to each sample block.
+  s_pager_codec.setVolumePercent(100);
+  s_pager_codec.setMute(false);
+  return true;
+#else
+  (void)sample_rate;
+  return false;
+#endif
+}
+
+extern "C" void touchGbAudioStop() {
+#if defined(HAS_TDECK_GT911)
+  i2s_zero_dma_buffer(kI2sPort);
+  i2s_driver_uninstall(kI2sPort);
+#elif defined(TLORA_PAGER)
+  pagerAudioUninstall();
+  board.setAmpEnabled(false);
+#endif
+}
+
 #if defined(HAS_TDECK_GT911)
 static bool tdeckPlayWavFile(const char* prefpath, int vol) {
   File f; if (!wavOpen(prefpath, f)) return false;
@@ -1013,7 +1047,7 @@ static void tdeckPlayNotifySlot(int slot) {
 }
 // Preview an arbitrary WAV (not yet saved to a slot) on the notify task.
 static void tdeckPreviewWavFile(const char* prefpath) {
-  if (s_tile_fetch_pending > 0 || s_notify_playing) return;
+  if (GameBoy::isOpen() || s_tile_fetch_pending > 0 || s_notify_playing) return;
   strncpy(s_notify_path, prefpath, sizeof s_notify_path - 1);
   s_notify_path[sizeof s_notify_path - 1] = '\0';
   s_notify_slot = TOUCH_SND_MSG;          // if the file fails, the task plays the msg chime
@@ -1087,6 +1121,7 @@ static void pagerNotifyTaskFn(void* arg) {
 }
 
 static void pagerPlayNotifySlot(int slot) {
+  if (GameBoy::isOpen()) return;
   if (s_tile_fetch_pending > 0) return;
   if (s_notify_playing) return;
   s_notify_slot = slot;
@@ -1098,7 +1133,7 @@ static void pagerPlayNotifySlot(int slot) {
   }
 }
 static void pagerPreviewWavFile(const char* prefpath) {
-  if (s_tile_fetch_pending > 0 || s_notify_playing) return;
+  if (GameBoy::isOpen() || s_tile_fetch_pending > 0 || s_notify_playing) return;
   strncpy(s_notify_path, prefpath, sizeof s_notify_path - 1);
   s_notify_path[sizeof s_notify_path - 1] = '\0';
   s_notify_slot = TOUCH_SND_MSG;
@@ -3821,10 +3856,10 @@ static void navPump() {
     // Game Boy owns physical input while open: map keyboard chars onto the GB
     // pad and swallow the event so it can't drive UI nav behind the game.
     // (Trackball D-pad + click=A are handled in the trackball reader above.)
-    if (GameBoy::isOpen()) {
-      if (ev.type == INPUT_EVENT_TYPE_KEYBOARD) GameBoy::keyChar(ev.args_keyboard.ascii);
-      continue;
-    }
+    if (ArtilleryGame::isOpen() && ev.type == INPUT_EVENT_TYPE_KEYBOARD &&
+        ArtilleryGame::keyChar(ev.args_keyboard.ascii)) continue;
+    if (GameBoy::isOpen() && ev.type == INPUT_EVENT_TYPE_KEYBOARD &&
+        GameBoy::keyChar(ev.args_keyboard.ascii)) continue;
 #if defined(HAS_TANMATSU)
     // Hard screen lock: the overlay absorbs everything else (Vol- was already handled above).
     if (g_lv.task && g_lv.task->isManualLocked()) continue;
@@ -5362,6 +5397,11 @@ static void applySwipeGesture(int8_t swipe_x, int8_t swipe_y) {
   if (SnakeGame::isOpen()) {
     if (swipe_x != 0)      SnakeGame::steer(swipe_x < 0 ? -1 : 1, 0);
     else if (swipe_y != 0) SnakeGame::steer(0, swipe_y < 0 ? -1 : 1);
+    return;
+  }
+  if (ArtilleryGame::isOpen()) {
+    if (swipe_x != 0)      ArtilleryGame::steer(swipe_x < 0 ? -1 : 1, 0);
+    else if (swipe_y != 0) ArtilleryGame::steer(0, swipe_y < 0 ? -1 : 1);
     return;
   }
   if (GameBoy::isOpen()) {
@@ -18788,9 +18828,11 @@ extern "C" bool touchGbSdEnsureMounted() { return fmSdTryMount(); }
 // Bridge for the GameBoy player's experimental direct-panel path (GB_DIRECT_PANEL
 // build): push an RGB565 block straight to the ST7789, same call LVGL's own flush
 // uses. Compiled unconditionally (unused in the normal build -> linker drops it).
+#if defined(GB_DIRECT_PANEL)
 extern "C" void touchGbBlit(int x, int y, int w, int h, const uint16_t* px) {
   display.writePixelsRGB565(x, y, w, h, (uint16_t*)px);
 }
+#endif
 static void fmSdUnmount() {
   if (s_sd_mounted) { SD.end(); s_sd_mounted = false; s_sd_size = 0; }
   s_sd_retry_after_ms = 0;   // a reinsert should be able to mount right away
@@ -33035,6 +33077,20 @@ static void updateTrackball(unsigned long now) {
     if (moved && (dx != 0 || dy != 0)) { SnakeGame::steer(dx, dy); if (g_lv.task) g_lv.task->noteUserInput(); }
     return;
   }
+  // ---- Artillery game ----
+  // Trackball changes angle/power and its click fires. The canvas owns the
+  // page, so hide/consume the soft cursor exactly as the other games do.
+  if (ArtilleryGame::isOpen()) {
+    if (!lv_obj_has_flag(s_tb_cursor, LV_OBJ_FLAG_HIDDEN))
+      lv_obj_add_flag(s_tb_cursor, LV_OBJ_FLAG_HIDDEN);
+    ArtilleryGame::setFire(s_tb_click_press);
+    s_tb_click_press = false;
+    if (moved && (dx != 0 || dy != 0)) {
+      ArtilleryGame::steer(dx, dy);
+      if (g_lv.task) g_lv.task->noteUserInput();
+    }
+    return;
+  }
   // ---- Game Boy ----
   // Trackball nudges the D-pad (brief pulse) and the click is the A button;
   // on-screen buttons (when shown) are primary. No soft cursor on this page.
@@ -33639,6 +33695,25 @@ static void updatePagerEncoder(unsigned long now) {
   // matching TLORA_PAGER fix) and the screen dimmed mid-use.
   if ((delta != 0 || held) && g_lv.task) g_lv.task->noteUserInput();
   if (delta != 0 || held) noteKbActivity();   // same activity counts for the keyboard-backlight auto mode
+
+  // The Pager's rotary control is the compact Artillery controller: turn the
+  // barrel angle and press to fire. Power remains on W/S.
+  if (ArtilleryGame::isOpen()) {
+    for (; delta > 0; --delta) ArtilleryGame::steer(+1, 0);
+    for (; delta < 0; ++delta) ArtilleryGame::steer(-1, 0);
+    ArtilleryGame::setFire(held);
+    return;
+  }
+
+  // During live Game Boy play the encoder is a compact extra controller:
+  // turn = left/right pulse, hold = A. The keyboard still supplies the full
+  // pad. Picker and pause-menu states fall through to ordinary focus nav.
+  if (GameBoy::isRunning()) {
+    for (; delta > 0; delta--) GameBoy::steer(+1, 0);
+    for (; delta < 0; delta++) GameBoy::steer(-1, 0);
+    GameBoy::setA(held);
+    return;
+  }
 
   // Alt+turn is a modifier combo, not a solo Alt tap -- mark it used so a
   // release right after this doesn't ALSO fire updatePagerAltTapNext()'s NEXT.
@@ -35108,9 +35183,6 @@ static bool m9HandleArrowKey(int key, lv_obj_t* ta) {
 // — the on-screen keyboard's target, which is the chat composer directly or the
 // settings mirror textarea. No field open -> the key is ignored.
 static void handleHwKey(int key) {
-  // Game Boy owns the physical keyboard while open (this is the T-Deck key path;
-  // navPump's hook is Tanmatsu-only). Map the char onto the GB pad and swallow.
-  if (GameBoy::isOpen()) { GameBoy::keyChar((char)key); return; }
   if (!g_lv.keyboard) return;
 if (g_lv.task && g_lv.task->isManualLock()) {
 #if defined(HAS_M9_KEYBOARD)
@@ -35146,6 +35218,19 @@ if (g_lv.task && g_lv.task->isManualLock()) {
   noteKbActivity();   // any key counts as activity for the keyboard-backlight auto mode too
 #endif
 #endif  // HAS_M9_KEYBOARD (wake-from-idle if/else)
+  // Route gameplay keys only after the lock/screen-off gates above. A consumed
+  // key is real activity; picker/menu keys that are not consumed continue into
+  // the normal LVGL focus-navigation path below.
+  if (ArtilleryGame::isOpen() && ArtilleryGame::keyChar((char)key)) {
+    if (g_lv.task) g_lv.task->noteUserInput();
+    noteKbActivity();
+    return;
+  }
+  if (GameBoy::isOpen() && GameBoy::keyChar((char)key)) {
+    if (g_lv.task) g_lv.task->noteUserInput();
+    noteKbActivity();
+    return;
+  }
 #if defined(HAS_TDECK_KEYBOARD) && defined(TDECK_KEYCODE_PROBE)
   // TEMP bring-up probe: toast the raw byte of every key so we can see what the
   // physical alt / mic / sym keys emit. Remove once the alt-accent key is wired.
@@ -36820,7 +36905,7 @@ enum AppDrawerAction {
   APPACT_CHATS, APPACT_CONTACTS, APPACT_MAP, APPACT_SETTINGS,
   APPACT_ADVERT, APPACT_POWER, APPACT_MENTIONS, APPACT_CMDCENTER, APPACT_SIGNAL,
   APPACT_TERMINAL, APPACT_FILES, APPACT_MONITOR, APPACT_SPECTRUM, APPACT_AIRTIME, APPACT_SNAKE, APPACT_VNC, APPACT_REMOTE, APPACT_READER,
-  APPACT_DISCOVER, APPACT_GAMEBOY,
+  APPACT_DISCOVER, APPACT_GAMEBOY, APPACT_ARTILLERY,
 };
 
 static void closeAppDrawer() {
@@ -37078,6 +37163,7 @@ static void appTileCb(lv_event_t* e) {
     case APPACT_POWER:     openPowerMenu();      return;
     case APPACT_SNAKE:     SnakeGame::launch();  return;
     case APPACT_GAMEBOY:   GameBoy::launch();    return;
+    case APPACT_ARTILLERY: ArtilleryGame::launch(); return;
 #if defined(HAS_TOUCH_UI)
     case APPACT_TERMINAL:  homeTerminalCb(e);    return;
 #endif
@@ -37437,7 +37523,10 @@ static void openAppDrawer() {
     { LV_SYMBOL_DIRECTORY, "Files",     APPACT_FILES,    0,         0xE6BE4A },      // folder gold
 #endif
     { nullptr,             "Snake",     APPACT_SNAKE,    0,         0x53C06B },      // snake game (icon drawn from APPACT_SNAKE, not a glyph)
+#if defined(HAS_TDECK_GT911) || defined(TLORA_PAGER)
     { "GB",                "Game Boy",  APPACT_GAMEBOY,  0,         0x9BBC0F },      // gnuboy Game Boy / GBC (DMG green)
+    { "45",                "Artillery", APPACT_ARTILLERY,0,         0xE88C30 },      // Scorched-style destructible terrain
+#endif
     { LV_SYMBOL_POWER,     "Power",     APPACT_POWER,    0,         0xE05544 },      // power red
   };
   const int n = (int)(sizeof(tiles) / sizeof(tiles[0]));
@@ -46280,6 +46369,43 @@ void UITask::newMsgFromPub(uint8_t path_len, const uint8_t* from_pub, const char
   syncThreadMeshSlots(from_name, false);
 }
 
+bool UITask::onAppMessage(const ContactInfo& transport,
+                          const uint8_t* author_id, size_t author_id_len,
+                          bool via_room, const char* text) {
+#if defined(HAS_TDECK_GT911) || defined(TLORA_PAGER)
+  const bool pending_before = ArtilleryGame::hasPendingInvite();
+  const bool consumed = ArtilleryGame::handleMeshMessage(
+      transport, author_id, author_id_len, via_room, text);
+  if (consumed && !pending_before && ArtilleryGame::hasPendingInvite()
+      && !ArtilleryGame::isOpen()) {
+    showAlert(TR("Artillery invite - open the game"), 4500);
+  }
+  return consumed;
+#else
+  (void)transport; (void)author_id; (void)author_id_len;
+  (void)via_room; (void)text;
+  return false;
+#endif
+}
+
+extern "C" void touchArtilleryTurnAlert() {
+#if defined(HAS_TDECK_GT911) || defined(TLORA_PAGER)
+  if (!g_lv.task) return;
+  g_lv.task->showAlert(TR("Your artillery turn"), 3000);
+#if defined(HAS_TDECK_KEYBOARD)
+  if (touchPrefsGetMsgFlash()) {
+    s_msgflash_until = millis() + 1600;
+    s_msgflash_wake = true;  // loop preserves a manual lock while revealing it
+  }
+#elif defined(TLORA_PAGER)
+  if (touchPrefsGetMsgFlash() && g_lv.task->isScreenOff() && !g_lv.task->isManualLock())
+    g_lv.task->wakeScreen();
+#endif
+  if (!g_lv.task->isBuzzerQuiet() && !dndActive() && touchPrefsGetSoundDirect())
+    uiPlaySlot(TOUCH_SND_DM);
+#endif
+}
+
 void UITask::newMsgFromPubWithMeta(uint8_t path_len, bool is_flood,
                                    const uint8_t* from_pub, const char* from_name,
                                    const char* text, int msgcount,
@@ -47388,7 +47514,7 @@ void UITask::loop() {
     // Also hard-lock the tab bar while Snake is open so a swipe/tap near the
     // bottom can't slip through to the app switcher (e.g. into the map).
     const bool want_lock = (now < s_tabbar_lock_until) || SnakeGame::isOpen() ||
-                           ChannelUtil::isOpen() || GameBoy::isOpen();
+                           ArtilleryGame::isOpen() || ChannelUtil::isOpen() || GameBoy::isOpen();
     if (want_lock != s_tabbar_locked && g_lv.tabview) {
       lv_obj_t* tab_btns = lv_tabview_get_tab_btns(g_lv.tabview);
       if (tab_btns) {

@@ -2624,6 +2624,9 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                            const char *text) {
   markConnectionActive(from); // in case this is from a server, and we have a connection
+#ifdef DISPLAY_CLASS
+  if (_ui && _ui->onAppMessage(from, from.id.pub_key, PUB_KEY_SIZE, false, text)) return;
+#endif
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 #if defined(ESP32) && defined(MULTI_TRANSPORT_COMPANION)
   mqtt_bridge.publishDM(from.name, from.id.pub_key, pkt->getSNR(), pkt->path_len, sender_timestamp, text);
@@ -2641,6 +2644,9 @@ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uin
   markConnectionActive(from);
   // from.sync_since change needs to be persisted
   dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+#ifdef DISPLAY_CLASS
+  if (_ui && _ui->onAppMessage(from, sender_prefix, 4, true, text)) return;
+#endif
   queueMessage(from, TXT_TYPE_SIGNED_PLAIN, pkt, sender_timestamp, sender_prefix, 4, text);
 #if defined(ESP32) && defined(MULTI_TRANSPORT_COMPANION)
   mqtt_bridge.publishDM(from.name, from.id.pub_key, pkt->getSNR(), pkt->path_len, sender_timestamp, text);

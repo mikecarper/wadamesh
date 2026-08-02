@@ -16,8 +16,21 @@
 
 // Note: Eventually we'll just pass a gb_host_t to init...
 // But for now assume it's been configured before we were alled!
+void gnuboy_deinit(void)
+{
+	gnuboy_free_rom();
+	gnuboy_free_bios();
+	free(GB.rambanks);
+	free(GB.vbanks);
+	memset(&GB, 0, sizeof(GB));
+}
+
 int gnuboy_init(int samplerate, gb_audio_fmt_t audio_fmt, gb_video_fmt_t video_fmt, gb_video_cb_t *video_callback, gb_audio_cb_t *audio_callback)
 {
+	// A host may open and close more than one game in its lifetime. Release the
+	// prior core allocations before replacing GB, otherwise every launch leaks
+	// the work RAM and VRAM allocated by gb_hw_init().
+	gnuboy_deinit();
 	GB = (gb_t){
 		.video.colorize = GB_PALETTE_CGB,
 		.video.format = video_fmt,
@@ -27,7 +40,10 @@ int gnuboy_init(int samplerate, gb_audio_fmt_t audio_fmt, gb_video_fmt_t video_f
 		.audio.callback = audio_callback,
 	};
 	if (!gb_hw_init())
+	{
+		gnuboy_deinit();
 		return -1;
+	}
 	return 0;
 }
 
@@ -165,7 +181,7 @@ int gnuboy_load_bios_file(const char *file)
 	if (!fp || fread(buffer, 1, 0x900, fp) < 0x100)
 	{
 		MESSAGE_ERROR("File read failed.\n");
-		fclose(fp);
+		if (fp) fclose(fp);
 		return -1;
 	}
 	fclose(fp);
@@ -273,14 +289,29 @@ int gnuboy_load_rom(const byte *data, size_t size)
 	{
 		cart.romsize = (2 << romsize);
 	}
+
 	else if (romsize > 0x51 && romsize < 0x55)
 	{
-		cart.romsize = 128; // (2 << romsize) + 64;
+		// Header codes 0x52/0x53/0x54 are the historical non-power-of-two
+		// 1.1/1.2/1.5 MiB layouts (72/80/96 banks), not 128 banks. Treating
+		// all three as 2 MiB made the truncation guard reject valid cartridges.
+		const int special_rom_sizes[] = {72, 80, 96};
+		cart.romsize = special_rom_sizes[romsize - 0x52];
 	}
 	else
 	{
 		MESSAGE_ERROR("Invalid ROM size: %d\n", romsize);
 		return -2;
+	}
+
+	// The bank table is sized from the header. Reject truncated images before
+	// exposing missing banks, and cap the pointer-fill loop so trailing bytes in
+	// a malformed image cannot write beyond that table.
+	const size_t declared_rom_bytes = (size_t)cart.romsize * BANK_SIZE;
+	if (size < declared_rom_bytes)
+	{
+		MESSAGE_ERROR("ROM is shorter than its declared bank count.\n");
+		return -4;
 	}
 
 	if (ramsize < 6)
@@ -303,7 +334,7 @@ int gnuboy_load_rom(const byte *data, size_t size)
 		return -3;
 	}
 
-	for (size_t pos = 0; size - pos >= BANK_SIZE; pos += BANK_SIZE)
+	for (size_t pos = 0; pos < declared_rom_bytes; pos += BANK_SIZE)
 	{
 		// FIXME: We need a way to tag this as non-freeable...
 		cart.rombanks[pos / BANK_SIZE] = (byte *)(data + pos);
@@ -555,7 +586,7 @@ int gnuboy_load_sram(const char *file)
 		if (fseek(f, i * 8192, SEEK_SET) == 0 && fread(cart.rambanks[i], 8192, 1, f) == 1)
 		{
 			MESSAGE_INFO("Loaded SRAM bank %d.\n", i);
-			cart.sram_saved = (1 << i);
+				cart.sram_saved |= (1 << i);
 		}
 	}
 
@@ -592,7 +623,8 @@ int gnuboy_save_sram(const char *file, bool quick_save)
 	if (!cart.has_battery || !cart.ramsize || !file || !*file)
 		return -1;
 
-	FILE *f = fopen(file, "wb");
+	FILE *f = quick_save ? fopen(file, "r+b") : fopen(file, "wb");
+	if (!f && quick_save) f = fopen(file, "wb");
 	if (!f)
 		return -2;
 
@@ -702,7 +734,7 @@ typedef struct
 
 static int do_save_load(const char *file, bool save)
 {
-	uint32_t sav_ver = SAVE_VERSION;
+	uint32_t sav_ver = save ? SAVE_VERSION : 0;
 	const svar_t svars[] =
 	{
 		I4("GbSs", &sav_ver),
@@ -786,6 +818,9 @@ static int do_save_load(const char *file, bool save)
 	};
 
 	FILE *fp = NULL;
+	size_t expected_bytes = 0;
+	for (int i = 0; blocks[i].ptr != NULL; i++)
+		expected_bytes += 4096u * blocks[i].len;
 
 	if (save)
 	{
@@ -820,7 +855,7 @@ static int do_save_load(const char *file, bool save)
 
 		for (int i = 0; blocks[i].ptr != NULL; i++)
 		{
-			if (fwrite(blocks[i].ptr, 4096, blocks[i].len, fp) < 1)
+			if (fwrite(blocks[i].ptr, 4096, blocks[i].len, fp) != blocks[i].len)
 			{
 				MESSAGE_ERROR("Write error in block %d\n", i);
 				goto _error;
@@ -832,9 +867,50 @@ static int do_save_load(const char *file, bool save)
 		if (!(fp = fopen(file, "rb")))
 			goto _error;
 
-		for (int i = 0; blocks[i].ptr != NULL; i++)
+		// Reject truncated/foreign files before touching any live emulation RAM.
+		if (fseek(fp, 0, SEEK_END) != 0 || ftell(fp) != (long)expected_bytes ||
+		    fseek(fp, 0, SEEK_SET) != 0)
 		{
-			if (fread(blocks[i].ptr, 4096, blocks[i].len, fp) < 1)
+			MESSAGE_ERROR("Save-state size mismatch.\n");
+			goto _error;
+		}
+		if (fread(buf, 4096, 1, fp) != 1)
+		{
+			MESSAGE_ERROR("Read error in save-state header.\n");
+			goto _error;
+		}
+
+		// Validate every scalar key and the format version while state is still
+		// untouched. The old loader accepted a mismatched version and could scan
+		// past the 4 KiB header if a corrupt file lacked its zero terminator.
+		const size_t header_entries = 4096u / sizeof(header[0]);
+		for (int i = 0; svars[i].ptr; i++)
+		{
+			bool found = false;
+			for (size_t j = 0; j < header_entries && header[j][0]; j++)
+			{
+				if (header[j][0] == *(uint32_t *)svars[i].key)
+				{
+					found = true;
+					if (i == 0) sav_ver = LIL(header[j][1]);
+					break;
+				}
+			}
+			if (!found) {
+				MESSAGE_ERROR("Save-state header is missing a required key.\n");
+				goto _error;
+			}
+		}
+		if (sav_ver != SAVE_VERSION)
+		{
+			MESSAGE_ERROR("Save file version mismatch!\n");
+			goto _error;
+		}
+
+		// Header was read and validated above; load the remaining blocks exactly.
+		for (int i = 1; blocks[i].ptr != NULL; i++)
+		{
+			if (fread(blocks[i].ptr, 4096, blocks[i].len, fp) != blocks[i].len)
 			{
 				MESSAGE_ERROR("Read error in block %d\n", i);
 				goto _error;
@@ -845,7 +921,7 @@ static int do_save_load(const char *file, bool save)
 		{
 			uint32_t d = 0;
 
-			for (int j = 0; header[j][0]; j++)
+			for (size_t j = 0; j < header_entries && header[j][0]; j++)
 			{
 				if (header[j][0] == *(uint32_t *)svars[i].key)
 				{
@@ -867,9 +943,6 @@ static int do_save_load(const char *file, bool save)
 				break;
 			}
 		}
-
-		if (sav_ver != SAVE_VERSION)
-			MESSAGE_ERROR("Save file version mismatch!\n");
 
 		memcpy(hw.ioregs, buf + 0xD00, 256);
 		memcpy(hw.pal, buf + 0xE00, 128);
@@ -895,6 +968,7 @@ static int do_save_load(const char *file, bool save)
 _error:
 	if (fp) fclose(fp);
 	if (buf) free(buf);
+	if (save) remove(file);   // never leave a partial state as the next auto-resume target
 
 	return -1;
 }

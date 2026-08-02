@@ -86,6 +86,18 @@ public:
     (void)author_name;
     newMsgFromPubWithMeta(path_len, is_flood, from_pub, from_name, text, msgcount, snr_q4, rssi);
   }
+  /** Give an on-device application first refusal on a decrypted private-text
+   *  payload.  Direct messages identify their author with a full public key;
+   *  signed room posts carry the room contact plus the author's four-byte
+   *  prefix.  Returning true consumes the control payload before it reaches
+   *  chat history, companion clients, notifications, or MQTT. */
+  virtual bool onAppMessage(const ContactInfo& transport,
+                            const uint8_t* author_id, size_t author_id_len,
+                            bool via_room, const char* text) {
+    (void)transport; (void)author_id; (void)author_id_len;
+    (void)via_room; (void)text;
+    return false;
+  }
   /** A message the COMPANION APP sent on our behalf (CMD_SEND_TXT_MSG). The wire protocol
    *  deliberately doesn't echo sent messages back to clients, so the on-device UI is otherwise
    *  the only consumer that never sees app-originated sends — this lets it mirror one as a local

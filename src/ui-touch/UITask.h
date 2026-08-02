@@ -552,6 +552,9 @@ public:
                                  const char* author_name,
                                  const char* text, int msgcount,
                                  int8_t snr_q4, int8_t rssi) override;
+  bool onAppMessage(const ContactInfo& transport,
+                    const uint8_t* author_id, size_t author_id_len,
+                    bool via_room, const char* text) override;
   void appSentMsgToContact(const uint8_t* to_pub, const char* to_name, const char* text,
                            uint32_t ack_hash, uint32_t sent_fp = 0) override;
   void appSentMsgToChannel(const char* channel_name, const char* text, uint32_t sent_fp = 0) override;

@@ -19,8 +19,9 @@ class GameBoy {
 public:
   static void launch();               // open the picker (no-op if already open)
   static bool isOpen();               // UITask: gate tab bar + trackball nav
+  static bool isRunning();            // true while gameplay owns directional input
   static void steer(int dx, int dy);  // UITask: trackball motion -> D-pad pulse
   static void setA(bool down);        // UITask: trackball click -> A (held)
-  static void keyChar(char c);        // UITask: physical keyboard -> GB pad pulse
+  static bool keyChar(char c);        // true when the game consumed the key
   static void close();                // tear down, save, return to UI
 };
