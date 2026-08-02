@@ -24,9 +24,6 @@ namespace {
 
 constexpr uint32_t kTickMs = 33;
 constexpr int kControlH = 32;
-constexpr float kGravity = 0.12f;
-constexpr float kWindAccel = 0.003f;
-constexpr float kShotScale = 0.085f;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr char kProtocolPrefix[] = "~SG1|";
 
@@ -80,7 +77,7 @@ bool splitProtocol(const char* text, ProtocolFields& out) {
 
 bool knownCommand(const char* command) {
   return command && command[0] && command[1] == '\0'
-      && strchr("IJPCBVFSXTRQ", command[0]) != nullptr;
+      && strchr("IJPCBVFSKTRQ", command[0]) != nullptr;
 }
 
 bool parseUnsigned(const char* s, uint32_t& value, unsigned base = 10) {
@@ -136,14 +133,6 @@ void safeName(char* dest, size_t cap, const char* source) {
   }
   dest[n] = '\0';
   if (n == 0) snprintf(dest, cap, "player");
-}
-
-uint32_t nextTerrainRand(uint32_t& state) {
-  if (!state) state = 0x6D2B79F5u;
-  state ^= state << 13;
-  state ^= state >> 17;
-  state ^= state << 5;
-  return state;
 }
 
 bool timeReached(uint32_t now, uint32_t deadline) {
@@ -450,10 +439,16 @@ void ArtilleryGame::startLocalGame() {
   is_host_ = false;
   match_started_ = false;
   pending_begin_ = false;
+  pending_begin_count_ = 0;
+  pending_begin_first_ = 0;
+  pending_begin_hash_ = 0;
+  pending_begin_hash_valid_ = false;
+  resume_after_begin_ = false;
+  resume_event_count_ = 0;
   player_ = Tank{};
   cpu_ = Tank{};
-  player_.x = width_ * 14 / 100;
-  cpu_.x = width_ * 86 / 100;
+  player_.x = kWorldWidth * 14 / 100;
+  cpu_.x = kWorldWidth * 86 / 100;
   player_.angle = 45;
   cpu_.angle = 135;
   wind_ = (int)random(-5, 6);
@@ -478,42 +473,15 @@ void ArtilleryGame::replayGame() {
 }
 
 void ArtilleryGame::generateTerrain() {
-  int16_t world[kWorldWidth];
-  uint32_t rng = terrain_seed_ ? terrain_seed_ : 1;
-  const int min_y = kWorldHeight * 48 / 100;
-  const int max_y = kWorldHeight * 78 / 100;
-  int y = kWorldHeight * 62 / 100;
-  int target = y;
-  int remaining = 1;
-  for (int x = 0; x < kWorldWidth; ++x) {
-    if (--remaining <= 0) {
-      remaining = 18 + (int)(nextTerrainRand(rng) % 20u);
-      target = min_y + (int)(nextTerrainRand(rng) % (uint32_t)(max_y - min_y + 1));
-    }
-    if (y < target) ++y;
-    else if (y > target) --y;
-    int gy = y + (int)(3.0f * sinf((float)x * 0.055f));
-    if (gy < min_y) gy = min_y;
-    if (gy > max_y) gy = max_y;
-    world[x] = (int16_t)gy;
-  }
-  const int xden = width_ > 1 ? width_ - 1 : 1;
-  for (int x = 0; x < width_; ++x) {
-    const int wx = x * (kWorldWidth - 1) / xden;
-    terrain_[x] = (int16_t)(world[wx] * (height_ - 1) / (kWorldHeight - 1));
-  }
+  artillery::generateTerrain(terrain_seed_, terrain_);
 }
 
 void ArtilleryGame::flattenForTank(int x) {
-  if (x < 0 || x >= width_) return;
-  const int y = terrain_[x];
-  for (int px = x - 8; px <= x + 8; ++px)
-    if (px >= 0 && px < width_) terrain_[px] = (int16_t)y;
+  artillery::flattenForTank(terrain_, x);
 }
 
 int ArtilleryGame::tankY(const Tank& tank) const {
-  if (tank.x < 0 || tank.x >= width_) return height_ - 1;
-  return terrain_[tank.x];
+  return artillery::tankY(terrain_, tank);
 }
 
 bool ArtilleryGame::isLocalTurn() const {
@@ -526,9 +494,10 @@ bool ArtilleryGame::isLocalTurn() const {
 void ArtilleryGame::adjustAngle(int delta) {
   if (!isLocalTurn()) return;
   Tank* tank = mode_ == MODE_LOCAL ? &player_ : &mesh_players_[local_seat_].tank;
-  tank->angle += delta;
-  if (tank->angle < 5) tank->angle = 5;
-  if (tank->angle > 175) tank->angle = 175;
+  int angle = (int)tank->angle + delta;
+  if (angle < 5) angle = 5;
+  if (angle > 175) angle = 175;
+  tank->angle = (uint8_t)angle;
   updateHud();
   render();
 }
@@ -536,9 +505,10 @@ void ArtilleryGame::adjustAngle(int delta) {
 void ArtilleryGame::adjustPower(int delta) {
   if (!isLocalTurn()) return;
   Tank* tank = mode_ == MODE_LOCAL ? &player_ : &mesh_players_[local_seat_].tank;
-  tank->power += delta;
-  if (tank->power < 20) tank->power = 20;
-  if (tank->power > 100) tank->power = 100;
+  int power = (int)tank->power + delta;
+  if (power < 20) power = 20;
+  if (power > 100) power = 100;
+  tank->power = (uint8_t)power;
   updateHud();
   render();
 }
@@ -578,16 +548,8 @@ void ArtilleryGame::action() {
 
 void ArtilleryGame::launchShot(bool cpu_shot) {
   Tank& tank = cpu_shot ? cpu_ : player_;
-  const float angle = (float)tank.angle * kPi / 180.0f;
-  const float display_scale = sqrtf((float)width_ / 320.0f);
-  const float speed = (float)tank.power * kShotScale * display_scale;
-  const int ty = tankY(tank);
-
-  shell_x_ = (float)tank.x + cosf(angle) * 12.0f;
-  shell_y_ = (float)ty - 6.0f - sinf(angle) * 12.0f;
-  shell_vx_ = cosf(angle) * speed;
-  shell_vy_ = -sinf(angle) * speed;
-  shell_age_ = 0;
+  artillery::startShot(shell_, terrain_, tank, cpu_shot ? 1 : 0,
+                       tank.angle, tank.power);
   shot_by_cpu_ = cpu_shot;
   state_ = cpu_shot ? CPU_FLIGHT : PLAYER_FLIGHT;
   state_since_ms_ = millis();
@@ -601,17 +563,8 @@ void ArtilleryGame::launchMeshShot(int seat, int angle_deg, int power, int shot_
   tank.angle = angle_deg;
   tank.power = power;
   wind_ = shot_wind;
-  const float angle = (float)angle_deg * kPi / 180.0f;
-  const float display_scale = sqrtf((float)width_ / 320.0f);
-  const float speed = (float)power * kShotScale * display_scale;
-  const int ty = tankY(tank);
-  shell_x_ = (float)tank.x + cosf(angle) * 12.0f;
-  shell_y_ = (float)ty - 6.0f - sinf(angle) * 12.0f;
-  shell_vx_ = cosf(angle) * speed;
-  shell_vy_ = -sinf(angle) * speed;
-  shell_age_ = 0;
+  artillery::startShot(shell_, terrain_, tank, seat, angle_deg, power);
   shot_seat_ = seat;
-  mesh_result_received_ = false;
   explosion_x_ = explosion_y_ = -1;
   state_ = PLAYER_FLIGHT;
   state_since_ms_ = millis();
@@ -621,31 +574,19 @@ void ArtilleryGame::launchMeshShot(int seat, int angle_deg, int power, int shot_
 }
 
 int ArtilleryGame::simulateCpuImpact(int angle_deg, int power) const {
-  const float angle = (float)angle_deg * kPi / 180.0f;
-  const float scale = sqrtf((float)width_ / 320.0f);
-  const float speed = (float)power * kShotScale * scale;
-  float x = (float)cpu_.x + cosf(angle) * 12.0f;
-  float y = (float)tankY(cpu_) - 6.0f - sinf(angle) * 12.0f;
-  float vx = cosf(angle) * speed;
-  float vy = -sinf(angle) * speed;
-  for (int step = 0; step < 360; ++step) {
-    vx += (float)wind_ * kWindAccel;
-    vy += kGravity;
-    x += vx;
-    y += vy;
-    if (x < 0) return 0;
-    if (x >= width_) return width_ - 1;
-    const int ix = (int)x;
-    if (y >= 0 && y >= terrain_[ix]) return ix;
-    if (y > height_ + 16) return ix;
-  }
-  return (int)x;
+  Tank tanks[2] = {player_, cpu_};
+  artillery::Shot shot;
+  artillery::startShot(shot, terrain_, cpu_, 1, angle_deg, power);
+  const artillery::ShotResult result = artillery::simulateShot(
+      shot, wind_, terrain_, tanks, 2);
+  if (result.event == artillery::ShotEvent::Impact) return result.x;
+  return artillery::shotX(shot) < 0 ? 0 : kWorldWidth - 1;
 }
 
 void ArtilleryGame::chooseCpuShot() {
   int best_angle = 135;
   int best_power = 65;
-  int best_error = width_ * 2;
+  int best_error = kWorldWidth * 2;
   for (int angle = 95; angle <= 170; angle += 2) {
     for (int power = 28; power <= 100; power += 2) {
       const int impact = simulateCpuImpact(angle, power);
@@ -663,8 +604,8 @@ void ArtilleryGame::chooseCpuShot() {
   if (best_angle > 175) best_angle = 175;
   if (best_power < 20) best_power = 20;
   if (best_power > 100) best_power = 100;
-  cpu_.angle = best_angle;
-  cpu_.power = best_power;
+  cpu_.angle = (uint8_t)best_angle;
+  cpu_.power = (uint8_t)best_power;
 }
 
 void ArtilleryGame::tick() {
@@ -691,20 +632,8 @@ void ArtilleryGame::tick() {
       }
       break;
     case EXPLODING:
-      if (mode_ != MODE_LOCAL && !is_host_ && !mesh_result_received_) {
-        if (timeReached(now, mesh_retry_at_)) {
-          char request[48];
-          snprintf(request, sizeof request, "~SG1|R|%08lX|%u",
-                   (unsigned long)match_id_, (unsigned)mesh_turn_);
-          sendTransport(request);
-          mesh_retry_at_ = now + 8000;
-        }
-        redraw = (uint32_t)(now - state_since_ms_) < 600;
-        if (!redraw && timer_) lv_timer_set_period(timer_, 250);
-      } else {
-        if ((uint32_t)(now - state_since_ms_) >= 520) finishExplosion();
-        redraw = true;
-      }
+      if ((uint32_t)(now - state_since_ms_) >= 520) finishExplosion();
+      redraw = true;
       break;
     default:
       break;
@@ -716,65 +645,39 @@ void ArtilleryGame::tick() {
     mesh_retry_at_ = now + 10000;
   }
   if (pending_begin_ && !is_host_ && timeReached(now, mesh_retry_at_)) {
-    char request[48];
-    snprintf(request, sizeof request, "~SG1|R|%08lX|L", (unsigned long)match_id_);
-    sendTransport(request);
-    mesh_retry_at_ = now + 8000;
+    requestMeshRosterSnapshot();
+  }
+  if (mesh_recovering_ && !is_host_ && timeReached(now, mesh_retry_at_)) {
+    requestMeshEvent(mesh_event_sequence_);
   }
   if (redraw) render();
 }
 
 void ArtilleryGame::advanceShell() {
-  for (int sub = 0; sub < 3; ++sub) {
-    shell_vx_ += ((float)wind_ * kWindAccel) / 3.0f;
-    shell_vy_ += kGravity / 3.0f;
-    shell_x_ += shell_vx_ / 3.0f;
-    shell_y_ += shell_vy_ / 3.0f;
-    ++shell_age_;
-
-    if (shell_x_ < 0 || shell_x_ >= width_ || shell_y_ > height_ + 12) {
-      finishMiss();
-      return;
-    }
-    const int ix = (int)shell_x_;
-    const int iy = (int)shell_y_;
-
-    if (shell_age_ > 7) {
-      if (mode_ == MODE_LOCAL) {
-        const int py = tankY(player_) - 5;
-        const int cy = tankY(cpu_) - 5;
-        const int pdx = ix - player_.x, pdy = iy - py;
-        const int cdx = ix - cpu_.x, cdy = iy - cy;
-        if (pdx * pdx + pdy * pdy <= 49 || cdx * cdx + cdy * cdy <= 49) {
-          beginExplosion(ix, iy);
-          return;
-        }
-      } else {
-        for (int i = 0; i < mesh_player_count_; ++i) {
-          if (!mesh_players_[i].used || mesh_players_[i].tank.health <= 0) continue;
-          if (i == shot_seat_ && shell_age_ <= 12) continue;
-          const Tank& tank = mesh_players_[i].tank;
-          const int dx = ix - tank.x;
-          const int dy = iy - (tankY(tank) - 5);
-          if (dx * dx + dy * dy <= 49) {
-            beginExplosion(ix, iy);
-            return;
-          }
-        }
-      }
-    }
-    if (iy >= 0 && iy >= terrain_[ix]) {
-      beginExplosion(ix, iy);
-      return;
-    }
+  Tank tanks[kMaxPlayers];
+  int count = 0;
+  if (mode_ == MODE_LOCAL) {
+    tanks[0] = player_;
+    tanks[1] = cpu_;
+    count = 2;
+  } else {
+    count = mesh_player_count_;
+    for (int i = 0; i < count; ++i) tanks[i] = mesh_players_[i].tank;
+  }
+  const artillery::ShotResult result = artillery::stepShot(
+      shell_, wind_, terrain_, tanks, count);
+  if (result.event == artillery::ShotEvent::Miss) {
+    finishMiss();
+  } else if (result.event == artillery::ShotEvent::Impact) {
+    beginExplosion(result.x, result.y);
   }
 }
 
 void ArtilleryGame::beginExplosion(int x, int y) {
   if (x < 0) x = 0;
-  if (x >= width_) x = width_ - 1;
+  if (x >= kWorldWidth) x = kWorldWidth - 1;
   if (y < 0) y = 0;
-  if (y >= height_) y = height_ - 1;
+  if (y >= kWorldHeight) y = kWorldHeight - 1;
   explosion_x_ = x;
   explosion_y_ = y;
   state_ = EXPLODING;
@@ -784,11 +687,8 @@ void ArtilleryGame::beginExplosion(int x, int y) {
     damageTank(player_, x, y);
     damageTank(cpu_, x, y);
     carveCrater(x, y);
-  } else if (is_host_) {
-    resolveMeshShot(x, y, false);
   } else {
-    mesh_result_received_ = false;
-    mesh_retry_at_ = millis() + 8000;
+    resolveMeshShot(x, y, false);
   }
   updateHud();
 }
@@ -799,34 +699,29 @@ void ArtilleryGame::finishMiss() {
   state_since_ms_ = millis() - 260;
   if (timer_) { lv_timer_set_period(timer_, kTickMs); lv_timer_resume(timer_); }
   if (mode_ != MODE_LOCAL) {
-    if (is_host_) resolveMeshShot(-1, -1, true);
-    else {
-      mesh_result_received_ = false;
-      mesh_retry_at_ = millis() + 8000;
-    }
+    resolveMeshShot(-1, -1, true);
   }
   updateHud();
 }
 
 void ArtilleryGame::damageTank(Tank& tank, int x, int y) {
-  if (tank.health <= 0) return;
-  const int dx = tank.x - x;
-  const int dy = (tankY(tank) - 5) - y;
-  const int radius = kBlastRadius + 7;
-  if (dx * dx + dy * dy <= radius * radius) --tank.health;
+  artillery::damageTank(tank, terrain_, x, y);
 }
 
 void ArtilleryGame::carveCrater(int x, int y) {
-  const int r2 = kBlastRadius * kBlastRadius;
-  for (int px = x - kBlastRadius; px <= x + kBlastRadius; ++px) {
-    if (px < 0 || px >= width_) continue;
-    const int dx = px - x;
-    const int inside = r2 - dx * dx;
-    if (inside < 0) continue;
-    int bottom = y + (int)sqrtf((float)inside);
-    if (bottom >= height_) bottom = height_ - 1;
-    if (bottom > terrain_[px]) terrain_[px] = (int16_t)bottom;
-  }
+  artillery::carveCrater(terrain_, x, y);
+}
+
+int ArtilleryGame::worldToScreenX(int x) const {
+  if (x < 0) x = 0;
+  if (x >= kWorldWidth) x = kWorldWidth - 1;
+  return x * (width_ - 1) / (kWorldWidth - 1);
+}
+
+int ArtilleryGame::worldToScreenY(int y) const {
+  if (y < 0) y = 0;
+  if (y >= kWorldHeight) y = kWorldHeight - 1;
+  return y * (height_ - 1) / (kWorldHeight - 1);
 }
 
 int ArtilleryGame::aliveTeamMask() const {
@@ -886,7 +781,7 @@ void ArtilleryGame::finishExplosion() {
     if (!showMeshWinnerIfDone()) {
       ++mesh_turn_;
       turn_seat_ = pending_next_seat_;
-      wind_ = pending_next_wind_;
+      wind_ = artillery::windForTurn(terrain_seed_, mesh_turn_);
       state_ = isLocalTurn() ? PLAYER_AIM : MESH_WAIT;
       // isLocalTurn checks state, so set explicitly for the live local seat.
       if (turn_seat_ == local_seat_ && local_seat_ >= 0
@@ -904,6 +799,7 @@ void ArtilleryGame::finishExplosion() {
   }
   updateHud();
   if (mode_ != MODE_LOCAL && state_ == PLAYER_AIM) touchArtilleryTurnAlert();
+  if (mode_ != MODE_LOCAL && is_host_) processPendingForfeits();
 }
 
 void ArtilleryGame::showReplay(const char* text) {
@@ -955,12 +851,12 @@ void ArtilleryGame::updateHud() {
 
   if (turn_label_) {
     const char* turn = "Your turn";
-    if (state_ == PLAYER_FLIGHT || state_ == CPU_FLIGHT) turn = "Shot";
+    if (mesh_recovering_) turn = "Recovering...";
+    else if (state_ == PLAYER_FLIGHT || state_ == CPU_FLIGHT) turn = "Shot";
     else if (state_ == CPU_THINK) turn = "CPU aiming";
     else if (state_ == MESH_WAIT && turn_seat_ >= 0 && turn_seat_ < mesh_player_count_)
       turn = mesh_players_[turn_seat_].name;
     else if (state_ == SHOT_PENDING) turn = "Sending...";
-    else if (state_ == EXPLODING && mode_ != MODE_LOCAL && !mesh_result_received_) turn = "Syncing...";
     else if (state_ == EXPLODING) turn = "BOOM";
     else if (state_ == GAME_OVER) turn = "Game over";
     lv_label_set_text(turn_label_, turn);
@@ -1045,6 +941,12 @@ void ArtilleryGame::showModeMenu() {
   view_ = VIEW_MODE;
   match_started_ = false;
   pending_begin_ = false;
+  pending_begin_count_ = 0;
+  pending_begin_first_ = 0;
+  pending_begin_hash_ = 0;
+  pending_begin_hash_valid_ = false;
+  resume_after_begin_ = false;
+  resume_event_count_ = 0;
   is_host_ = false;
   picker_cursor_ = 0;
   if (timer_) lv_timer_pause(timer_);
@@ -1242,6 +1144,12 @@ void ArtilleryGame::beginHostLobby() {
   is_host_ = true;
   match_started_ = false;
   pending_begin_ = false;
+  pending_begin_count_ = 0;
+  pending_begin_first_ = 0;
+  pending_begin_hash_ = 0;
+  pending_begin_hash_valid_ = false;
+  resume_after_begin_ = false;
+  resume_event_count_ = 0;
   teams_enabled_ = false;
   roster_revision_ = 1;
   match_id_ = (uint32_t)random(1, 0x7FFFFFFF);
@@ -1278,6 +1186,12 @@ void ArtilleryGame::acceptInvite() {
   is_host_ = false;
   match_started_ = false;
   pending_begin_ = false;
+  pending_begin_count_ = 0;
+  pending_begin_first_ = 0;
+  pending_begin_hash_ = 0;
+  pending_begin_hash_valid_ = false;
+  resume_after_begin_ = false;
+  resume_event_count_ = 0;
   teams_enabled_ = s_pending_invite.teams;
   match_id_ = s_pending_invite.match;
   terrain_seed_ = s_pending_invite.seed;
@@ -1398,38 +1312,69 @@ void ArtilleryGame::configureMeshTanks() {
   for (int i = 0; i < mesh_player_count_; ++i) {
     if (!mesh_players_[i].used) continue;
     Tank& tank = mesh_players_[i].tank;
-    tank.x = (i + 1) * width_ / (mesh_player_count_ + 1);
+    tank.x = (int16_t)((i + 1) * kWorldWidth / (mesh_player_count_ + 1));
     tank.health = 3;
     tank.power = 65;
-    tank.angle = tank.x < width_ / 2 ? 45 : 135;
+    tank.angle = tank.x < kWorldWidth / 2 ? 45 : 135;
   }
   generateTerrain();
   for (int i = 0; i < mesh_player_count_; ++i)
     if (mesh_players_[i].used) flattenForTank(mesh_players_[i].tank.x);
 }
 
-void ArtilleryGame::startMeshMatch(uint8_t expected_players) {
+void ArtilleryGame::startMeshMatch(uint8_t expected_players, uint8_t first_seat) {
   int used = 0;
   for (int i = 0; i < mesh_player_count_; ++i) if (mesh_players_[i].used) ++used;
-  if (used < expected_players || expected_players < 2) {
+  if (used < expected_players || expected_players < 2 || first_seat >= expected_players) {
     pending_begin_ = true;
     pending_begin_count_ = expected_players;
+    pending_begin_first_ = first_seat;
     mesh_retry_at_ = millis() + 2000;
     if (timer_) { lv_timer_set_period(timer_, 250); lv_timer_resume(timer_); }
     return;
   }
-  pending_begin_ = false;
+
   mesh_player_count_ = expected_players;
-  match_started_ = true;
-  view_ = VIEW_GAME;
+  match_started_ = false;
   mesh_turn_ = 0;
-  last_result_turn_ = UINT16_MAX;
-  turn_seat_ = 0;
+  mesh_event_sequence_ = 0;
+  mesh_event_count_ = 0;
+  mesh_recovering_ = false;
+  recovery_reset_attempted_ = false;
+  pending_forfeit_mask_ = 0;
+  memset(mesh_events_, 0, sizeof(mesh_events_));
+  initial_turn_seat_ = first_seat;
+  turn_seat_ = first_seat;
   shot_seat_ = -1;
   pending_next_seat_ = -1;
-  mesh_result_received_ = false;
-  last_result_frame_[0] = '\0';
   configureMeshTanks();
+  wind_ = artillery::windForTurn(terrain_seed_, mesh_turn_);
+
+  if (!is_host_ && pending_begin_hash_valid_ && meshStateHash() != pending_begin_hash_) {
+    pending_begin_ = true;
+    pending_begin_count_ = expected_players;
+    pending_begin_first_ = first_seat;
+    view_ = VIEW_LOBBY;
+    state_ = MESH_WAIT;
+    if (timer_) { lv_timer_set_period(timer_, 250); lv_timer_resume(timer_); }
+    if (!mesh_retry_at_ || timeReached(millis(), mesh_retry_at_))
+      requestMeshRosterSnapshot();
+    updateHud();
+    render();
+    return;
+  }
+
+  const bool resume = resume_after_begin_;
+  const uint16_t resume_count = resume_event_count_;
+  pending_begin_ = false;
+  pending_begin_count_ = 0;
+  pending_begin_first_ = 0;
+  pending_begin_hash_ = 0;
+  pending_begin_hash_valid_ = false;
+  resume_after_begin_ = false;
+  resume_event_count_ = 0;
+  match_started_ = true;
+  view_ = VIEW_GAME;
   clearOverlay();
   hideReplay();
   state_ = turn_seat_ == local_seat_ ? PLAYER_AIM : MESH_WAIT;
@@ -1437,6 +1382,8 @@ void ArtilleryGame::startMeshMatch(uint8_t expected_players) {
   if (timer_) lv_timer_pause(timer_);
   updateHud();
   render();
+  if (!is_host_ && resume && resume_count > 0)
+    beginMeshRecovery((uint16_t)(resume_count - 1u), false);
 }
 
 void ArtilleryGame::startHostedMatch() {
@@ -1452,16 +1399,16 @@ void ArtilleryGame::startHostedMatch() {
       }
     }
   }
-  wind_ = (int)random(-5, 6);
   uint32_t team_bits = 0;
   for (int i = 0; i < mesh_player_count_; ++i)
     if (mesh_players_[i].team & 1) team_bits |= 1u << i;
-  snprintf(last_begin_frame_, sizeof last_begin_frame_,
-           "~SG1|B|%08lX|%08lX|%d|0|%d|%u|%lX",
-           (unsigned long)match_id_, (unsigned long)terrain_seed_, mesh_player_count_,
-           wind_, teams_enabled_ ? 1u : 0u, (unsigned long)team_bits);
-  broadcast(last_begin_frame_);
   startMeshMatch((uint8_t)mesh_player_count_);
+  snprintf(last_begin_frame_, sizeof last_begin_frame_,
+           "~SG1|B|%08lX|%08lX|%d|0|%u|%lX|%08lX",
+           (unsigned long)match_id_, (unsigned long)terrain_seed_, mesh_player_count_,
+           teams_enabled_ ? 1u : 0u, (unsigned long)team_bits,
+           (unsigned long)meshStateHash());
+  broadcast(last_begin_frame_);
 }
 
 bool ArtilleryGame::sendProtocolTo(const ContactInfo& recipient, const char* text) {
@@ -1564,72 +1511,295 @@ void ArtilleryGame::sendTeamRequest(uint8_t team) {
 void ArtilleryGame::sendShotRequest() {
   if (local_seat_ < 0 || local_seat_ >= mesh_player_count_) return;
   const Tank& tank = mesh_players_[local_seat_].tank;
-  char frame[72];
-  snprintf(frame, sizeof frame, "~SG1|F|%08lX|%u|%d|%d",
-           (unsigned long)match_id_, (unsigned)mesh_turn_, tank.angle, tank.power);
+  char frame[96];
+  snprintf(frame, sizeof frame, "~SG1|F|%08lX|%u|%u|%u|%u|%08lX",
+           (unsigned long)match_id_, (unsigned)mesh_event_sequence_,
+           (unsigned)mesh_turn_, (unsigned)tank.angle, (unsigned)tank.power,
+           (unsigned long)meshStateHash());
   sendTransport(frame);
 }
 
 void ArtilleryGame::broadcastShot(int seat, int angle, int power) {
-  if (!is_host_ || seat != turn_seat_ || state_ == PLAYER_FLIGHT || state_ == EXPLODING) return;
-  char frame[88];
-  snprintf(frame, sizeof frame, "~SG1|S|%08lX|%u|%d|%d|%d|%d",
-           (unsigned long)match_id_, (unsigned)mesh_turn_, seat, angle, power, wind_);
+  if (!is_host_ || seat != turn_seat_
+      || (state_ != PLAYER_AIM && state_ != MESH_WAIT)) return;
+  if (seat < 0 || seat >= mesh_player_count_ || !mesh_players_[seat].used
+      || mesh_players_[seat].tank.health <= 0
+      || angle < 5 || angle > 175 || power < 20 || power > 100) return;
+  MeshEventRecord event;
+  event.pre_hash = meshStateHash();
+  event.sequence = mesh_event_sequence_;
+  event.turn = mesh_turn_;
+  event.type = MESH_EVENT_SHOT;
+  event.seat = (uint8_t)seat;
+  event.angle = (uint8_t)angle;
+  event.power = (uint8_t)power;
+  char frame[96];
+  if (!formatMeshEvent(event, frame, sizeof frame) || !storeMeshEvent(event)) return;
   broadcast(frame);
-  launchMeshShot(seat, angle, power, wind_);
+  ++mesh_event_sequence_;
+  launchMeshShot(seat, angle, power, artillery::windForTurn(terrain_seed_, mesh_turn_));
 }
 
 void ArtilleryGame::resolveMeshShot(int x, int y, bool missed) {
-  if (!is_host_ || last_result_turn_ == mesh_turn_) return;
   if (!missed) {
     for (int i = 0; i < mesh_player_count_; ++i)
       if (mesh_players_[i].used) damageTank(mesh_players_[i].tank, x, y);
     carveCrater(x, y);
   }
-  char health[kMaxPlayers + 1];
-  for (int i = 0; i < mesh_player_count_; ++i)
-    health[i] = (char)('0' + (mesh_players_[i].tank.health < 0 ? 0 : mesh_players_[i].tank.health));
-  health[mesh_player_count_] = '\0';
   pending_next_seat_ = nextAliveSeat(turn_seat_);
-  pending_next_wind_ = (int)random(-5, 6);
-  const int nx = missed ? -1 : x * (kWorldWidth - 1) / (width_ > 1 ? width_ - 1 : 1);
-  const int ny = missed ? -1 : y * (kWorldHeight - 1) / (height_ > 1 ? height_ - 1 : 1);
-  snprintf(last_result_frame_, sizeof last_result_frame_,
-           "~SG1|X|%08lX|%u|%d|%d|%s|%d|%d",
-           (unsigned long)match_id_, (unsigned)mesh_turn_, nx, ny, health,
-           pending_next_seat_, pending_next_wind_);
-  last_result_turn_ = mesh_turn_;
-  mesh_result_received_ = true;
-  broadcast(last_result_frame_);
 }
 
-void ArtilleryGame::applyMeshResult(uint16_t turn, int nx, int ny, const char* health,
-                                    int next_seat, int next_wind) {
-  if (turn != mesh_turn_ || last_result_turn_ == turn || !health
-      || strlen(health) != (size_t)mesh_player_count_) return;
+uint32_t ArtilleryGame::meshStateHash() const {
+  uint32_t hash = 2166136261u;
+  hash = artillery::hashU32(hash, match_id_);
+  hash = artillery::hashU32(hash, terrain_seed_);
+  hash = artillery::hashU16(hash, mesh_event_sequence_);
+  hash = artillery::hashU16(hash, mesh_turn_);
+  hash = artillery::hashByte(hash, (uint8_t)(turn_seat_ + 1));
+  hash = artillery::hashByte(hash, (uint8_t)(wind_ + 5));
+  hash = artillery::hashByte(hash, teams_enabled_ ? 1u : 0u);
+  hash = artillery::hashByte(hash, (uint8_t)mesh_player_count_);
   for (int i = 0; i < mesh_player_count_; ++i) {
-    if (health[i] < '0' || health[i] > '3') return;
+    const MeshPlayer& player = mesh_players_[i];
+    hash = artillery::hashByte(hash, player.used ? 1u : 0u);
+    for (uint8_t id_byte : player.id) hash = artillery::hashByte(hash, id_byte);
+    hash = artillery::hashByte(hash, player.team & 1u);
+    hash = artillery::hashU16(hash, (uint16_t)player.tank.x);
+    hash = artillery::hashByte(hash, (uint8_t)player.tank.health);
   }
-  for (int i = 0; i < mesh_player_count_; ++i)
-    mesh_players_[i].tank.health = health[i] - '0';
-  if (nx >= 0 && ny >= 0) {
-    const int x = nx * (width_ - 1) / (kWorldWidth - 1);
-    const int y = ny * (height_ - 1) / (kWorldHeight - 1);
-    explosion_x_ = x;
-    explosion_y_ = y;
-    carveCrater(x, y);
-  } else {
-    explosion_x_ = explosion_y_ = -1;
+  for (int x = 0; x < kWorldWidth; ++x)
+    hash = artillery::hashU16(hash, (uint16_t)terrain_[x]);
+  return hash;
+}
+
+bool ArtilleryGame::storeMeshEvent(const MeshEventRecord& event) {
+  if (event.sequence != mesh_event_count_ || mesh_event_count_ >= kMaxMeshEvents) return false;
+  mesh_events_[mesh_event_count_++] = event;
+  return true;
+}
+
+bool ArtilleryGame::formatMeshEvent(const MeshEventRecord& event, char* frame, size_t cap) const {
+  if (!frame || cap == 0) return false;
+  int written = -1;
+  if (event.type == MESH_EVENT_SHOT) {
+    written = snprintf(frame, cap, "~SG1|S|%08lX|%u|%u|%u|%u|%u|%08lX",
+        (unsigned long)match_id_, (unsigned)event.sequence, (unsigned)event.turn,
+        (unsigned)event.seat, (unsigned)event.angle, (unsigned)event.power,
+        (unsigned long)event.pre_hash);
+  } else if (event.type == MESH_EVENT_FORFEIT) {
+    written = snprintf(frame, cap, "~SG1|Q|%08lX|%u|%u|%08lX",
+        (unsigned long)match_id_, (unsigned)event.sequence, (unsigned)event.seat,
+        (unsigned long)event.pre_hash);
   }
-  pending_next_seat_ = next_seat;
-  pending_next_wind_ = next_wind;
-  last_result_turn_ = turn;
-  mesh_result_received_ = true;
-  state_ = EXPLODING;
+  return written > 0 && (size_t)written < cap && written <= MAX_TEXT_LEN;
+}
+
+void ArtilleryGame::resetMeshState(bool clear_history) {
+  mesh_turn_ = 0;
+  mesh_event_sequence_ = 0;
+  turn_seat_ = initial_turn_seat_;
+  shot_seat_ = -1;
+  pending_next_seat_ = -1;
+  explosion_x_ = explosion_y_ = -1;
+  configureMeshTanks();
+  wind_ = artillery::windForTurn(terrain_seed_, mesh_turn_);
+  state_ = turn_seat_ == local_seat_ ? PLAYER_AIM : MESH_WAIT;
+  if (clear_history) {
+    mesh_event_count_ = 0;
+    memset(mesh_events_, 0, sizeof(mesh_events_));
+  }
+}
+
+bool ArtilleryGame::applyMeshEventInstant(const MeshEventRecord& event) {
+  if (event.sequence != mesh_event_sequence_ || event.pre_hash != meshStateHash()) return false;
+  if (event.seat >= (uint8_t)mesh_player_count_ || !mesh_players_[event.seat].used) return false;
+
+  if (event.type == MESH_EVENT_SHOT) {
+    if (event.turn != mesh_turn_ || event.seat != (uint8_t)turn_seat_
+        || mesh_players_[event.seat].tank.health <= 0
+        || event.angle < 5 || event.angle > 175
+        || event.power < 20 || event.power > 100) return false;
+    Tank& shooter = mesh_players_[event.seat].tank;
+    shooter.angle = event.angle;
+    shooter.power = event.power;
+    Tank tanks[kMaxPlayers];
+    for (int i = 0; i < mesh_player_count_; ++i) tanks[i] = mesh_players_[i].tank;
+    artillery::Shot shot;
+    artillery::startShot(shot, terrain_, shooter, event.seat, event.angle, event.power);
+    const artillery::ShotResult result = artillery::simulateShot(
+        shot, wind_, terrain_, tanks, mesh_player_count_);
+    ++mesh_event_sequence_;
+    if (result.event == artillery::ShotEvent::Impact) {
+      for (int i = 0; i < mesh_player_count_; ++i)
+        if (mesh_players_[i].used) damageTank(mesh_players_[i].tank, result.x, result.y);
+      carveCrater(result.x, result.y);
+    }
+    const int alive = aliveTeamMask();
+    if (alive != 0 && (alive & (alive - 1)) != 0) {
+      turn_seat_ = nextAliveSeat(turn_seat_);
+      ++mesh_turn_;
+      wind_ = artillery::windForTurn(terrain_seed_, mesh_turn_);
+    }
+    return true;
+  }
+
+  if (event.type == MESH_EVENT_FORFEIT) {
+    ++mesh_event_sequence_;
+    applyMeshForfeit(event.seat);
+    return true;
+  }
+  return false;
+}
+
+bool ArtilleryGame::rebuildMeshState() {
+  const uint16_t saved_count = mesh_event_count_;
+  resetMeshState(false);
+  for (uint16_t i = 0; i < saved_count; ++i) {
+    if (!applyMeshEventInstant(mesh_events_[i])) return false;
+  }
+  settleMeshState(false);
+  return true;
+}
+
+void ArtilleryGame::requestMeshEvent(uint16_t sequence) {
+  char frame[48];
+  snprintf(frame, sizeof frame, "~SG1|R|%08lX|%u",
+           (unsigned long)match_id_, (unsigned)sequence);
+  sendTransport(frame);
+  mesh_retry_at_ = millis() + 8000;
+}
+
+void ArtilleryGame::requestMeshRosterSnapshot() {
+  if (is_host_ || match_id_ == 0) return;
+  char frame[48];
+  snprintf(frame, sizeof frame, "~SG1|R|%08lX|L", (unsigned long)match_id_);
+  sendTransport(frame);
+  mesh_retry_at_ = millis() + 8000;
+}
+
+void ArtilleryGame::restartMeshRecoveryFromRoster(uint16_t event_count) {
+  if (is_host_) return;
+  resume_after_begin_ = true;
+  resume_event_count_ = event_count;
+  match_started_ = false;
+  pending_begin_ = true;
+  pending_begin_count_ = 0;
+  pending_begin_first_ = 0;
+  pending_begin_hash_ = 0;
+  pending_begin_hash_valid_ = false;
+  mesh_recovering_ = false;
+  recovery_reset_attempted_ = false;
+  state_ = MESH_WAIT;
+  showLobby();
+  if (timer_) { lv_timer_set_period(timer_, 250); lv_timer_resume(timer_); }
+  mesh_retry_at_ = 0;
+  requestMeshRosterSnapshot();
+}
+
+void ArtilleryGame::beginMeshRecovery(uint16_t target_event, bool reset) {
+  if (reset) resetMeshState(true);
+  if (!mesh_recovering_ || target_event > recovery_target_event_)
+    recovery_target_event_ = target_event;
+  mesh_recovering_ = true;
+  recovery_reset_attempted_ = recovery_reset_attempted_ || reset;
+  state_ = MESH_WAIT;
+  if (timer_) {
+    lv_timer_set_period(timer_, 250);
+    lv_timer_resume(timer_);
+  }
+  requestMeshEvent(mesh_event_sequence_);
+  updateHud();
+}
+
+void ArtilleryGame::continueMeshRecovery() {
+  if (!mesh_recovering_) return;
+  if (mesh_event_sequence_ <= recovery_target_event_) {
+    requestMeshEvent(mesh_event_sequence_);
+    return;
+  }
+  // Ask for the event after the replay range. The host answers with a stable
+  // checkpoint, which proves that the locally replayed result is identical.
+  requestMeshEvent(mesh_event_sequence_);
+}
+
+void ArtilleryGame::sendMeshCheckpoint(const uint8_t* recipient, size_t recipient_len) {
+  // A flight has consumed its event sequence but has not advanced the turn;
+  // publishing that transient state would make a healthy peer reset itself.
+  if (state_ == PLAYER_FLIGHT || state_ == EXPLODING
+      || !recipient || recipient_len < 4) return;
+  char target[9];
+  idToHex(recipient, target);
+  char frame[96];
+  snprintf(frame, sizeof frame, "~SG1|K|%08lX|%s|%u|%u|%d|%08lX",
+      (unsigned long)match_id_, target, (unsigned)mesh_event_sequence_,
+      (unsigned)mesh_turn_, turn_seat_, (unsigned long)meshStateHash());
+  if (mode_ == MODE_DM && recipient && recipient_len == 32) sendToPub(recipient, frame);
+  else if (mode_ == MODE_ROOM) sendTransport(frame);
+}
+
+void ArtilleryGame::resendMeshEvent(uint16_t sequence,
+                                    const uint8_t* recipient, size_t recipient_len) {
+  if (sequence >= mesh_event_count_) {
+    if (sequence == mesh_event_sequence_) sendMeshCheckpoint(recipient, recipient_len);
+    return;
+  }
+  char frame[96];
+  if (!formatMeshEvent(mesh_events_[sequence], frame, sizeof frame)) return;
+  if (mode_ == MODE_DM && recipient && recipient_len == 32) sendToPub(recipient, frame);
+  else if (mode_ == MODE_ROOM) sendTransport(frame);
+}
+
+void ArtilleryGame::applyMeshForfeit(int seat) {
+  if (seat < 0 || seat >= mesh_player_count_) return;
+  mesh_players_[seat].tank.health = 0;
+  const int alive = aliveTeamMask();
+  if (seat == turn_seat_ && alive != 0 && (alive & (alive - 1)) != 0) {
+    turn_seat_ = nextAliveSeat(seat);
+    ++mesh_turn_;
+    wind_ = artillery::windForTurn(terrain_seed_, mesh_turn_);
+  }
+}
+
+void ArtilleryGame::settleMeshState(bool alert_turn) {
+  if (showMeshWinnerIfDone()) return;
+  state_ = (turn_seat_ == local_seat_ && local_seat_ >= 0
+            && mesh_players_[local_seat_].tank.health > 0) ? PLAYER_AIM : MESH_WAIT;
   state_since_ms_ = millis();
-  if (timer_) { lv_timer_set_period(timer_, kTickMs); lv_timer_resume(timer_); }
+  if (timer_) lv_timer_pause(timer_);
   updateHud();
   render();
+  if (alert_turn && state_ == PLAYER_AIM) touchArtilleryTurnAlert();
+}
+
+void ArtilleryGame::broadcastMeshForfeit(int seat) {
+  if (!is_host_ || state_ == GAME_OVER || seat <= 0 || seat >= mesh_player_count_) return;
+  if (!mesh_players_[seat].used || mesh_players_[seat].tank.health <= 0) return;
+  if (state_ == PLAYER_FLIGHT || state_ == EXPLODING) {
+    pending_forfeit_mask_ |= (uint16_t)(1u << seat);
+    return;
+  }
+  MeshEventRecord event;
+  event.pre_hash = meshStateHash();
+  event.sequence = mesh_event_sequence_;
+  event.turn = mesh_turn_;
+  event.type = MESH_EVENT_FORFEIT;
+  event.seat = (uint8_t)seat;
+  char frame[64];
+  if (!formatMeshEvent(event, frame, sizeof frame) || !storeMeshEvent(event)) return;
+  broadcast(frame);
+  ++mesh_event_sequence_;
+  applyMeshForfeit(seat);
+  settleMeshState(true);
+}
+
+void ArtilleryGame::processPendingForfeits() {
+  if (!is_host_ || state_ == PLAYER_FLIGHT || state_ == EXPLODING) return;
+  const uint16_t pending = pending_forfeit_mask_;
+  pending_forfeit_mask_ = 0;
+  for (int seat = 1; seat < mesh_player_count_; ++seat) {
+    if (pending & (uint16_t)(1u << seat)) broadcastMeshForfeit(seat);
+    if (state_ == GAME_OVER) break;
+  }
 }
 
 bool ArtilleryGame::authorIsHost(const uint8_t* author_id, size_t author_id_len) const {
@@ -1742,7 +1912,7 @@ void ArtilleryGame::receiveProtocol(const ContactInfo& transport,
     }
     roster_revision_ = revision;
     refreshLobby();
-    if (pending_begin_) startMeshMatch(pending_begin_count_);
+    if (pending_begin_) startMeshMatch(pending_begin_count_, pending_begin_first_);
     return;
   }
 
@@ -1779,7 +1949,7 @@ void ArtilleryGame::receiveProtocol(const ContactInfo& transport,
       if (timer_ && view_ == VIEW_LOBBY) lv_timer_pause(timer_);
     }
     refreshLobby();
-    if (pending_begin_) startMeshMatch(pending_begin_count_);
+    if (pending_begin_) startMeshMatch(pending_begin_count_, pending_begin_first_);
     return;
   }
 
@@ -1817,22 +1987,26 @@ void ArtilleryGame::receiveProtocol(const ContactInfo& transport,
 
   if (command == 'B' && frame.count == 9 && !is_host_ && authorIsHost(author_id, author_id_len)
       && !match_started_) {
-    uint32_t seed = 0, count = 0, first = 0, teams = 0, team_bits = 0;
-    int start_wind = 0;
+    uint32_t seed = 0, count = 0, first = 0, teams = 0, team_bits = 0, start_hash = 0;
+    const uint32_t player_cap = mode_ == MODE_DM ? kDmMaxPlayers : kMaxPlayers;
     if (!parseUnsigned(frame.field[3], seed, 16) || seed == 0
-        || !parseUnsigned(frame.field[4], count) || count < 2 || count > kMaxPlayers
+        || !parseUnsigned(frame.field[4], count) || count < 2 || count > player_cap
         || !parseUnsigned(frame.field[5], first) || first >= count
-        || !parseSigned(frame.field[6], start_wind) || start_wind < -5 || start_wind > 5
-        || !parseUnsigned(frame.field[7], teams) || teams > 1
-        || !parseUnsigned(frame.field[8], team_bits, 16)
+        || !parseUnsigned(frame.field[6], teams) || teams > 1
+        || !parseUnsigned(frame.field[7], team_bits, 16)
+        || !parseUnsigned(frame.field[8], start_hash, 16)
         || team_bits >= (1u << count)) return;
     terrain_seed_ = seed;
     turn_seat_ = (int)first;
-    wind_ = start_wind;
     teams_enabled_ = teams != 0;
     for (uint32_t i = 0; i < count; ++i)
       mesh_players_[i].team = (uint8_t)((team_bits >> i) & 1u);
-    startMeshMatch((uint8_t)count);
+    pending_begin_count_ = (uint8_t)count;
+    pending_begin_first_ = (uint8_t)first;
+    pending_begin_hash_ = start_hash;
+    pending_begin_hash_valid_ = true;
+    mesh_retry_at_ = 0;
+    startMeshMatch((uint8_t)count, (uint8_t)first);
     return;
   }
 
@@ -1847,28 +2021,33 @@ void ArtilleryGame::receiveProtocol(const ContactInfo& transport,
     return;
   }
 
-  if (command == 'Q' && frame.count == 7 && !is_host_ && match_started_
+  if (command == 'Q' && frame.count == 6 && !is_host_ && match_started_
       && authorIsHost(author_id, author_id_len)) {
-    uint32_t seat = 0, turn = 0;
-    int next = 0, next_wind = 0;
-    if (!parseUnsigned(frame.field[3], seat) || seat >= (uint32_t)mesh_player_count_
-        || !parseSigned(frame.field[4], next) || next < -1 || next >= mesh_player_count_
-        || !parseSigned(frame.field[5], next_wind) || next_wind < -5 || next_wind > 5
-        || !parseUnsigned(frame.field[6], turn) || turn > UINT16_MAX
-        || (turn != mesh_turn_ && turn != (uint32_t)mesh_turn_ + 1u)) return;
-    mesh_players_[seat].tank.health = 0;
-    if (turn == (uint32_t)mesh_turn_ + 1u) {
-      mesh_turn_ = (uint16_t)turn;
-      turn_seat_ = next;
-      wind_ = next_wind;
-      state_ = (turn_seat_ == local_seat_ && local_seat_ >= 0
-                && mesh_players_[local_seat_].tank.health > 0) ? PLAYER_AIM : MESH_WAIT;
-      if (timer_) lv_timer_pause(timer_);
-      if (state_ == PLAYER_AIM) touchArtilleryTurnAlert();
+    uint32_t sequence = 0, seat = 0, pre_hash = 0;
+    if (!parseUnsigned(frame.field[3], sequence) || sequence > UINT16_MAX
+        || !parseUnsigned(frame.field[4], seat) || seat >= (uint32_t)mesh_player_count_
+        || !parseUnsigned(frame.field[5], pre_hash, 16)) return;
+    if (sequence < mesh_event_sequence_) return;
+    if (sequence > mesh_event_sequence_) {
+      beginMeshRecovery((uint16_t)sequence, false);
+      return;
     }
-    if (state_ != PLAYER_FLIGHT && state_ != EXPLODING) showMeshWinnerIfDone();
-    updateHud();
-    render();
+    MeshEventRecord event;
+    event.pre_hash = pre_hash;
+    event.sequence = (uint16_t)sequence;
+    event.turn = mesh_turn_;
+    event.type = MESH_EVENT_FORFEIT;
+    event.seat = (uint8_t)seat;
+    if (!mesh_players_[event.seat].used) return;
+    if (event.pre_hash != meshStateHash()) {
+      if (!rebuildMeshState() || event.pre_hash != meshStateHash()) {
+        beginMeshRecovery(event.sequence, true);
+        return;
+      }
+    }
+    if (!storeMeshEvent(event) || !applyMeshEventInstant(event)) return;
+    if (mesh_recovering_) continueMeshRecovery();
+    else settleMeshState(true);
     return;
   }
 
@@ -1882,23 +2061,7 @@ void ArtilleryGame::receiveProtocol(const ContactInfo& transport,
     if (is_host_ && match_started_) {
       const int seat = findMeshPlayer(author_id);
       if (seat <= 0 || seat >= mesh_player_count_) return;
-      mesh_players_[seat].tank.health = 0;
-      if (seat == turn_seat_ && state_ != PLAYER_FLIGHT && state_ != EXPLODING) {
-        turn_seat_ = nextAliveSeat(seat);
-        wind_ = (int)random(-5, 6);
-        ++mesh_turn_;
-        state_ = (turn_seat_ == local_seat_ && local_seat_ >= 0
-                  && mesh_players_[local_seat_].tank.health > 0) ? PLAYER_AIM : MESH_WAIT;
-        if (timer_) lv_timer_pause(timer_);
-        if (state_ == PLAYER_AIM) touchArtilleryTurnAlert();
-      }
-      char leave[80];
-      snprintf(leave, sizeof leave, "~SG1|Q|%08lX|%d|%d|%d|%u",
-               (unsigned long)match_id_, seat, turn_seat_, wind_, (unsigned)mesh_turn_);
-      broadcast(leave);
-      if (state_ != PLAYER_FLIGHT && state_ != EXPLODING) showMeshWinnerIfDone();
-      updateHud();
-      render();
+      broadcastMeshForfeit(seat);
     } else if (is_host_ && !match_started_) {
       const int seat = findMeshPlayer(author_id);
       if (seat <= 0 || seat >= mesh_player_count_) return;
@@ -1917,44 +2080,71 @@ void ArtilleryGame::receiveProtocol(const ContactInfo& transport,
     return;
   }
 
-  if (command == 'F' && frame.count == 6 && is_host_ && match_started_) {
-    uint32_t turn = 0, angle = 0, power = 0;
+  if (command == 'F' && frame.count == 8 && is_host_ && match_started_) {
+    uint32_t sequence = 0, turn = 0, angle = 0, power = 0, pre_hash = 0;
     const int seat = findMeshPlayer(author_id);
-    if (seat != turn_seat_ || !parseUnsigned(frame.field[3], turn) || turn != mesh_turn_
-        || !parseUnsigned(frame.field[4], angle) || angle < 5 || angle > 175
-        || !parseUnsigned(frame.field[5], power) || power < 20 || power > 100) return;
+    if (seat < 0 || !parseUnsigned(frame.field[3], sequence) || sequence > UINT16_MAX
+        || !parseUnsigned(frame.field[4], turn) || turn > UINT16_MAX
+        || !parseUnsigned(frame.field[5], angle) || angle < 5 || angle > 175
+        || !parseUnsigned(frame.field[6], power) || power < 20 || power > 100
+        || !parseUnsigned(frame.field[7], pre_hash, 16)) return;
+    if (sequence < mesh_event_sequence_) {
+      resendMeshEvent((uint16_t)sequence, author_id, author_id_len);
+      return;
+    }
+    if (sequence > mesh_event_sequence_ || seat != turn_seat_ || turn != mesh_turn_
+        || pre_hash != meshStateHash()) {
+      sendMeshCheckpoint(author_id, author_id_len);
+      return;
+    }
     broadcastShot(seat, (int)angle, (int)power);
     return;
   }
 
-  if (command == 'S' && frame.count == 8 && !is_host_ && match_started_
+  if (command == 'S' && frame.count == 9 && !is_host_ && match_started_
       && authorIsHost(author_id, author_id_len)) {
-    uint32_t turn = 0, seat = 0, angle = 0, power = 0;
-    int shot_wind = 0;
-    if (!parseUnsigned(frame.field[3], turn) || turn != mesh_turn_
-        || !parseUnsigned(frame.field[4], seat) || seat != (uint32_t)turn_seat_
-        || !parseUnsigned(frame.field[5], angle) || angle < 5 || angle > 175
-        || !parseUnsigned(frame.field[6], power) || power < 20 || power > 100
-        || !parseSigned(frame.field[7], shot_wind) || shot_wind < -5 || shot_wind > 5) return;
-    if (state_ == PLAYER_FLIGHT || state_ == EXPLODING) return;
-    launchMeshShot((int)seat, (int)angle, (int)power, shot_wind);
-    return;
-  }
-
-  if (command == 'X' && frame.count == 9 && !is_host_ && match_started_
-      && authorIsHost(author_id, author_id_len)) {
-    uint32_t turn = 0;
-    int nx = 0, ny = 0, next = 0, next_wind = 0;
-    if (!parseUnsigned(frame.field[3], turn) || turn > UINT16_MAX
-        || !parseSigned(frame.field[4], nx) || nx < -1 || nx >= kWorldWidth
-        || !parseSigned(frame.field[5], ny) || ny < -1 || ny >= kWorldHeight
-        || !parseSigned(frame.field[7], next) || next < -1 || next >= mesh_player_count_
-        || !parseSigned(frame.field[8], next_wind) || next_wind < -5 || next_wind > 5) return;
-    applyMeshResult((uint16_t)turn, nx, ny, frame.field[6], next, next_wind);
+    uint32_t sequence = 0, turn = 0, seat = 0, angle = 0, power = 0, pre_hash = 0;
+    if (!parseUnsigned(frame.field[3], sequence) || sequence > UINT16_MAX
+        || !parseUnsigned(frame.field[4], turn) || turn > UINT16_MAX
+        || !parseUnsigned(frame.field[5], seat) || seat >= (uint32_t)mesh_player_count_
+        || !parseUnsigned(frame.field[6], angle) || angle < 5 || angle > 175
+        || !parseUnsigned(frame.field[7], power) || power < 20 || power > 100
+        || !parseUnsigned(frame.field[8], pre_hash, 16)) return;
+    if (sequence < mesh_event_sequence_) return;
+    if (sequence > mesh_event_sequence_) {
+      beginMeshRecovery((uint16_t)sequence, false);
+      return;
+    }
+    MeshEventRecord event;
+    event.pre_hash = pre_hash;
+    event.sequence = (uint16_t)sequence;
+    event.turn = (uint16_t)turn;
+    event.type = MESH_EVENT_SHOT;
+    event.seat = (uint8_t)seat;
+    event.angle = (uint8_t)angle;
+    event.power = (uint8_t)power;
+    if (event.pre_hash != meshStateHash()) {
+      if (!rebuildMeshState() || event.pre_hash != meshStateHash()) {
+        beginMeshRecovery(event.sequence, true);
+        return;
+      }
+    }
+    if (event.turn != mesh_turn_ || event.seat != (uint8_t)turn_seat_) return;
+    if (!mesh_recovering_ && (state_ == PLAYER_FLIGHT || state_ == EXPLODING)) return;
+    if (!storeMeshEvent(event)) return;
+    if (mesh_recovering_) {
+      if (!applyMeshEventInstant(event)) return;
+      continueMeshRecovery();
+    } else {
+      ++mesh_event_sequence_;
+      launchMeshShot((int)seat, (int)angle, (int)power,
+                     artillery::windForTurn(terrain_seed_, mesh_turn_));
+    }
     return;
   }
 
   if (command == 'R' && frame.count == 4 && is_host_ && match_started_) {
+    if (findMeshPlayer(author_id) < 0) return;
     if (strcmp(frame.field[3], "L") == 0) {
       if (!last_begin_frame_[0]) return;
       if (mode_ == MODE_DM && author_id_len == 32) {
@@ -1966,11 +2156,48 @@ void ArtilleryGame::receiveProtocol(const ContactInfo& transport,
       }
       return;
     }
-    uint32_t turn = 0;
-    if (!parseUnsigned(frame.field[3], turn) || turn != last_result_turn_
-        || !last_result_frame_[0]) return;
-    if (mode_ == MODE_DM && author_id_len == 32) sendToPub(author_id, last_result_frame_);
-    else if (mode_ == MODE_ROOM) sendTransport(last_result_frame_);
+    uint32_t sequence = 0;
+    if (!parseUnsigned(frame.field[3], sequence) || sequence > UINT16_MAX) return;
+    resendMeshEvent((uint16_t)sequence, author_id, author_id_len);
+    return;
+  }
+
+  if (command == 'K' && frame.count == 8 && !is_host_ && match_started_
+      && authorIsHost(author_id, author_id_len)) {
+    uint32_t sequence = 0, turn = 0, state_hash = 0;
+    uint8_t target[4];
+    int seat = -1;
+    const uint8_t* self = the_mesh.getSelfPubKey();
+    if (!self || !hexToId(frame.field[3], target) || memcmp(target, self, 4) != 0
+        || !parseUnsigned(frame.field[4], sequence) || sequence > UINT16_MAX
+        || !parseUnsigned(frame.field[5], turn) || turn > UINT16_MAX
+        || !parseSigned(frame.field[6], seat) || seat < -1 || seat >= mesh_player_count_
+        || !parseUnsigned(frame.field[7], state_hash, 16)) return;
+    if (sequence < mesh_event_sequence_) return;
+    if (sequence > mesh_event_sequence_) {
+      beginMeshRecovery((uint16_t)(sequence - 1u), false);
+      return;
+    }
+    if (mesh_turn_ == turn && turn_seat_ == seat && meshStateHash() == state_hash) {
+      mesh_recovering_ = false;
+      recovery_reset_attempted_ = false;
+      settleMeshState(false);
+      return;
+    }
+    if (!recovery_reset_attempted_) {
+      if (rebuildMeshState() && mesh_turn_ == turn && turn_seat_ == seat
+          && meshStateHash() == state_hash) {
+        mesh_recovering_ = false;
+        recovery_reset_attempted_ = false;
+        settleMeshState(false);
+        return;
+      }
+      if (sequence > 0) {
+        beginMeshRecovery((uint16_t)(sequence - 1u), true);
+        return;
+      }
+    }
+    restartMeshRecoveryFromRoster((uint16_t)sequence);
   }
 }
 
@@ -2010,36 +2237,51 @@ void ArtilleryGame::fillCircle(int cx, int cy, int radius, lv_color_t color) {
 
 void ArtilleryGame::drawTank(const Tank& tank, lv_color_t body) {
   if (tank.health <= 0) return;
-  const int y = tankY(tank);
+  const int x = worldToScreenX(tank.x);
+  const int y = worldToScreenY(tankY(tank));
+  const int half_w = width_ >= 400 ? 10 : 8;
+  const int body_h = height_ >= 190 ? 6 : 5;
   const lv_color_t dark = lv_color_hex(0x152129);
-  fillRect(tank.x - 8, y - 5, 17, 5, dark);
-  fillRect(tank.x - 6, y - 9, 13, 5, body);
-  fillCircle(tank.x, y - 9, 3, body);
+  fillRect(x - half_w, y - body_h, half_w * 2 + 1, body_h, dark);
+  fillRect(x - half_w + 2, y - body_h * 2, (half_w - 2) * 2 + 1, body_h, body);
+  fillCircle(x, y - body_h * 2, 3, body);
   const float angle = (float)tank.angle * kPi / 180.0f;
-  const int muzzle_x = tank.x + (int)(cosf(angle) * 12.0f);
-  const int muzzle_y = y - 9 - (int)(sinf(angle) * 12.0f);
-  line(tank.x, y - 9, muzzle_x, muzzle_y, body);
+  const float barrel_x = 12.0f * (float)width_ / (float)kWorldWidth;
+  const float barrel_y = 12.0f * (float)height_ / (float)kWorldHeight;
+  const int turret_y = y - body_h * 2;
+  const int muzzle_x = x + (int)(cosf(angle) * barrel_x);
+  const int muzzle_y = turret_y - (int)(sinf(angle) * barrel_y);
+  line(x, turret_y, muzzle_x, muzzle_y, body);
   for (int i = 0; i < tank.health; ++i)
-    fillRect(tank.x - 7 + i * 5, y - 19, 3, 2, body);
+    fillRect(x - 7 + i * 5, turret_y - 10, 3, 2, body);
 }
 
 void ArtilleryGame::drawAimGuide() {
   if (!isLocalTurn()) return;
   const Tank& tank = mode_ == MODE_LOCAL ? player_ : mesh_players_[local_seat_].tank;
-  const float angle = (float)tank.angle * kPi / 180.0f;
-  const float scale = sqrtf((float)width_ / 320.0f);
-  float x = (float)tank.x + cosf(angle) * 12.0f;
-  float y = (float)tankY(tank) - 6.0f - sinf(angle) * 12.0f;
-  float vx = cosf(angle) * (float)tank.power * kShotScale * scale;
-  float vy = -sinf(angle) * (float)tank.power * kShotScale * scale;
-  const lv_color_t guide = lv_color_hex(0x91C9D6);
+  Tank tanks[kMaxPlayers];
+  int count = 0;
+  int shooter = 0;
+  if (mode_ == MODE_LOCAL) {
+    tanks[0] = player_;
+    tanks[1] = cpu_;
+    count = 2;
+  } else {
+    count = mesh_player_count_;
+    shooter = local_seat_;
+    for (int i = 0; i < count; ++i) tanks[i] = mesh_players_[i].tank;
+  }
+  artillery::Shot guide;
+  artillery::startShot(guide, terrain_, tank, shooter, tank.angle, tank.power);
+  const lv_color_t guide_color = lv_color_hex(0x91C9D6);
   for (int step = 0; step < 20; ++step) {
-    vx += (float)wind_ * kWindAccel;
-    vy += kGravity;
-    x += vx;
-    y += vy;
-    if ((step & 2) == 0) fillCircle((int)x, (int)y, 1, guide);
-    if (x < 0 || x >= width_ || y >= height_) break;
+    const artillery::ShotResult result = artillery::stepShot(
+        guide, wind_, terrain_, tanks, count);
+    if ((step & 2) == 0) {
+      fillCircle(worldToScreenX(artillery::shotX(guide)),
+                 worldToScreenY(artillery::shotY(guide)), 1, guide_color);
+    }
+    if (result.event != artillery::ShotEvent::InFlight) break;
   }
 }
 
@@ -2060,7 +2302,8 @@ void ArtilleryGame::render() {
   const lv_color_t deep = lv_color_hex(kSoilDeep);
   const lv_color_t grass = lv_color_hex(kGrass);
   for (int x = 0; x < width_; ++x) {
-    int top = terrain_[x];
+    const int world_x = x * (kWorldWidth - 1) / (width_ > 1 ? width_ - 1 : 1);
+    int top = worldToScreenY(terrain_[world_x]);
     if (top < 0) top = 0;
     if (top >= height_) top = height_ - 1;
     pixel(x, top, grass);
@@ -2087,14 +2330,21 @@ void ArtilleryGame::render() {
   }
 
   if (state_ == PLAYER_FLIGHT || state_ == CPU_FLIGHT)
-    fillCircle((int)shell_x_, (int)shell_y_, 2, lv_color_hex(kShell));
+    fillCircle(worldToScreenX(artillery::shotX(shell_)),
+               worldToScreenY(artillery::shotY(shell_)), 2, lv_color_hex(kShell));
   if (state_ == EXPLODING && explosion_x_ >= 0) {
     uint32_t elapsed = millis() - state_since_ms_;
-    int radius = (int)(elapsed * kBlastRadius / 240u);
-    if (radius > kBlastRadius) radius = kBlastRadius;
+    int max_radius = kBlastRadius * width_ / kWorldWidth;
+    const int height_radius = kBlastRadius * height_ / kWorldHeight;
+    if (height_radius < max_radius) max_radius = height_radius;
+    if (max_radius < 2) max_radius = 2;
+    int radius = (int)(elapsed * (uint32_t)max_radius / 240u);
+    if (radius > max_radius) radius = max_radius;
     if (radius < 2) radius = 2;
-    fillCircle(explosion_x_, explosion_y_, radius, lv_color_hex(kBlast));
-    fillCircle(explosion_x_, explosion_y_, radius / 2, lv_color_hex(0xFFF2A6));
+    const int x = worldToScreenX(explosion_x_);
+    const int y = worldToScreenY(explosion_y_);
+    fillCircle(x, y, radius, lv_color_hex(kBlast));
+    fillCircle(x, y, radius / 2, lv_color_hex(0xFFF2A6));
   }
   lv_obj_invalidate(canvas_);
 }

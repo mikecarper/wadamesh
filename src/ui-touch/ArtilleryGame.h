@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "ArtilleryPhysics.h"
+
 #include <lvgl.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -9,7 +11,8 @@ struct ContactInfo;
 
 // Compact Scorched-Earth-style artillery game for the touch UI.  Local play
 // uses a CPU opponent. Mesh play uses encrypted MeshCore private messages or a
-// signed room, with a host-authoritative roster, turn order, and shot results.
+// signed room, with a host-authoritative roster and turn order. Every peer
+// calculates deterministic shot results in the same canonical world.
 class ArtilleryGame {
 public:
   static void launch();
@@ -29,20 +32,15 @@ public:
 
 private:
   static constexpr int kMaxWidth = 800;
-  static constexpr int kBlastRadius = 15;
-  static constexpr int kMaxPlayers = 10;
+  static constexpr int kBlastRadius = artillery::kBlastRadius;
+  static constexpr int kMaxPlayers = artillery::kMaxPlayers;
   static constexpr int kDmMaxPlayers = 4;
   static constexpr int kMaxName = 15;
   static constexpr int kPickerRows = 4;
-  static constexpr int kWorldWidth = 320;
-  static constexpr int kWorldHeight = 160;
+  static constexpr int kWorldWidth = artillery::kWorldWidth;
+  static constexpr int kWorldHeight = artillery::kWorldHeight;
 
-  struct Tank {
-    int x = 0;
-    int health = 3;
-    int angle = 45;   // absolute degrees: 0=right, 90=up, 180=left
-    int power = 65;
-  };
+  using Tank = artillery::Tank;
 
   struct MeshPlayer {
     Tank tank;
@@ -66,6 +64,21 @@ private:
     int mesh_index = -1;
     lv_obj_t* button = nullptr;
     lv_obj_t* label = nullptr;
+  };
+
+  enum MeshEventType : uint8_t {
+    MESH_EVENT_SHOT = 1,
+    MESH_EVENT_FORFEIT = 2,
+  };
+
+  struct MeshEventRecord {
+    uint32_t pre_hash = 0;
+    uint16_t sequence = 0;
+    uint16_t turn = 0;
+    uint8_t type = 0;
+    uint8_t seat = 0;
+    uint8_t angle = 0;
+    uint8_t power = 0;
   };
 
   enum State : uint8_t {
@@ -122,7 +135,7 @@ private:
   int width_ = 0;
   int height_ = 0;
   int canvas_y_ = 0;
-  int16_t terrain_[kMaxWidth] = {};
+  int16_t terrain_[kWorldWidth] = {};
   Tank player_;
   Tank cpu_;
   State state_ = PLAYER_AIM;
@@ -133,26 +146,22 @@ private:
   int wind_ = 0;                    // negative = left, positive = right
   uint32_t terrain_seed_ = 1;
 
-  float shell_x_ = 0;
-  float shell_y_ = 0;
-  float shell_vx_ = 0;
-  float shell_vy_ = 0;
-  int shell_age_ = 0;
+  artillery::Shot shell_;
   int explosion_x_ = -1;
   int explosion_y_ = -1;
   uint32_t state_since_ms_ = 0;
 
-  // Mesh lobby and match state. The host owns seat assignment, health,
-  // terrain damage, wind, and turn advancement. Guests submit only aim/power.
+  // Mesh lobby and match state. The host validates and orders player actions;
+  // every peer derives health, terrain damage, wind, and turns from that log.
   MeshPlayer mesh_players_[kMaxPlayers] = {};
   InviteTarget invite_targets_[kDmMaxPlayers - 1] = {};
   int mesh_player_count_ = 0;
   int invite_target_count_ = 0;
   int local_seat_ = -1;
+  uint8_t initial_turn_seat_ = 0;
   int turn_seat_ = 0;
   int shot_seat_ = -1;
   int pending_next_seat_ = -1;
-  int pending_next_wind_ = 0;
   int picker_page_ = 0;
   int picker_cursor_ = 0;
   int picker_total_ = 0;
@@ -160,11 +169,20 @@ private:
   bool is_host_ = false;
   bool teams_enabled_ = false;
   bool match_started_ = false;
-  bool mesh_result_received_ = false;
   bool pending_begin_ = false;
   uint8_t pending_begin_count_ = 0;
+  uint8_t pending_begin_first_ = 0;
+  uint32_t pending_begin_hash_ = 0;
+  bool pending_begin_hash_valid_ = false;
+  bool resume_after_begin_ = false;
+  uint16_t resume_event_count_ = 0;
   uint16_t mesh_turn_ = 0;
-  uint16_t last_result_turn_ = UINT16_MAX;
+  uint16_t mesh_event_sequence_ = 0;
+  uint16_t mesh_event_count_ = 0;
+  uint16_t recovery_target_event_ = 0;
+  uint16_t pending_forfeit_mask_ = 0;
+  bool mesh_recovering_ = false;
+  bool recovery_reset_attempted_ = false;
   uint32_t match_id_ = 0;
   uint32_t roster_revision_ = 0;
   uint32_t mesh_retry_at_ = 0;
@@ -172,7 +190,8 @@ private:
   uint8_t transport_pub_[32] = {};  // host contact in DM; room server in room mode
   char transport_name_[kMaxName + 1] = {};
   char last_begin_frame_[128] = {};
-  char last_result_frame_[128] = {};
+  static constexpr int kMaxMeshEvents = 256;
+  MeshEventRecord mesh_events_[kMaxMeshEvents] = {};
 
   bool open();
   void close();
@@ -197,6 +216,8 @@ private:
   void finishExplosion();
   void damageTank(Tank& tank, int x, int y);
   void carveCrater(int x, int y);
+  int worldToScreenX(int x) const;
+  int worldToScreenY(int y) const;
   void showReplay(const char* text);
   void hideReplay();
   void updateHud();
@@ -236,9 +257,24 @@ private:
   void sendShotRequest();
   void broadcastShot(int seat, int angle, int power);
   void resolveMeshShot(int x, int y, bool missed);
-  void applyMeshResult(uint16_t turn, int nx, int ny, const char* health,
-                       int next_seat, int next_wind);
-  void startMeshMatch(uint8_t expected_players);
+  uint32_t meshStateHash() const;
+  bool storeMeshEvent(const MeshEventRecord& event);
+  bool formatMeshEvent(const MeshEventRecord& event, char* frame, size_t cap) const;
+  bool applyMeshEventInstant(const MeshEventRecord& event);
+  bool rebuildMeshState();
+  void resetMeshState(bool clear_history);
+  void beginMeshRecovery(uint16_t target_event, bool reset);
+  void requestMeshEvent(uint16_t sequence);
+  void requestMeshRosterSnapshot();
+  void restartMeshRecoveryFromRoster(uint16_t event_count);
+  void continueMeshRecovery();
+  void sendMeshCheckpoint(const uint8_t* recipient, size_t recipient_len);
+  void resendMeshEvent(uint16_t sequence, const uint8_t* recipient, size_t recipient_len);
+  void applyMeshForfeit(int seat);
+  void broadcastMeshForfeit(int seat);
+  void processPendingForfeits();
+  void settleMeshState(bool alert_turn);
+  void startMeshMatch(uint8_t expected_players, uint8_t first_seat = 0);
   void configureMeshTanks();
   int findMeshPlayer(const uint8_t id[4]) const;
   int addMeshPlayer(const uint8_t id[4], const uint8_t* full_pub,
