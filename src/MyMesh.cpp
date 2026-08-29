@@ -13,6 +13,7 @@
 #endif
 #endif
 #include <helpers/AdvertDataHelpers.h>
+#include "helpers/CompanionCliProtocol.h"
 #include <helpers/HttpOtaDisplayState.h>
 #include <helpers/RepeaterTcpOtaEmit.h>
 #include "WiFiConfig.h"
@@ -418,6 +419,12 @@ bool MyMesh::isMeshcomodRecipient(const uint8_t* pub_key_prefix_6) const {
 // here so command replies (and async ones like "wifi scan") also land in the
 // terminal log, not just the companion serial frames.
 static void (*s_terminal_sink)(const char*) = nullptr;
+// Command 66 has one bounded reply frame and no continuation marker. Capture
+// the existing local CLI output instead of adding it to synthetic chat history.
+static bool s_companion_cli_capture_active = false;
+static char s_companion_cli_reply[MAX_FRAME_SIZE];
+static CompanionCliProtocol::ReplyCapture s_companion_cli_capture;
+
 void MyMesh::setTerminalSink(void (*cb)(const char*)) { s_terminal_sink = cb; }
 void MyMesh::runLocalCli(const char* cmd) {
   if (cmd && *cmd) handleMeshcomodCommand(cmd, (int)strlen(cmd));
@@ -425,6 +432,10 @@ void MyMesh::runLocalCli(const char* cmd) {
 
 void MyMesh::pushMeshcomodReply(const char* text, bool immediate_current) {
   if (!text) return;
+  if (s_companion_cli_capture_active) {
+    CompanionCliProtocol::appendReply(s_companion_cli_capture, text);
+    return;
+  }
   if (s_terminal_sink) s_terminal_sink(text);
   int total_len = (int)strlen(text);
   if (total_len <= 0) return;
@@ -1031,7 +1042,7 @@ bool MyMesh::handleMeshcomodCommand(const char* text, int text_len) {
 #endif
 #endif
   pushMeshcomodReply(kMeshcomodHelpMsg);
-  return true;
+  return false;  // Local callers keep the help text; command 66 returns "Unknown command".
 }
 
 void MyMesh::updateContactFromFrame(ContactInfo &contact, uint32_t& last_mod, const uint8_t *frame, int len) {
@@ -3323,6 +3334,37 @@ void MyMesh::handleCmdFrame(size_t len) {
     memcpy(&out_frame[i], _prefs.node_name, tlen);
     i += tlen;
     _serial->writeFrame(out_frame, i);
+  } else if (cmd_frame[0] == CompanionCliProtocol::CMD_RUN_CLI_COMMAND) {
+    const size_t text_len = len > 0 ? len - 1 : 0;
+    if (text_len == 0 ||
+        CompanionCliProtocol::containsNul(&cmd_frame[1], text_len)) {
+      writeErrFrame(ERR_CODE_ILLEGAL_ARG);
+    } else {
+      cmd_frame[len] = 0;
+      char prefix[4];
+      const char* command = CompanionCliProtocol::parseRequest(
+          reinterpret_cast<const char*>(&cmd_frame[1]), prefix);
+
+      CompanionCliProtocol::beginReply(
+          s_companion_cli_capture, s_companion_cli_reply,
+          sizeof(s_companion_cli_reply) - 1, prefix);
+      s_companion_cli_capture_active = true;
+      const bool handled = command[0] != '\0' &&
+          handleMeshcomodCommand(command, (int)strlen(command));
+      s_companion_cli_capture_active = false;
+      if (!handled) {
+        CompanionCliProtocol::beginReply(
+            s_companion_cli_capture, s_companion_cli_reply,
+            sizeof(s_companion_cli_reply) - 1, prefix);
+        CompanionCliProtocol::appendReply(
+            s_companion_cli_capture, "Unknown command");
+      }
+
+      CompanionCliProtocol::finishReply(s_companion_cli_capture);
+      const size_t frame_len = CompanionCliProtocol::encodeReplyFrame(
+          out_frame, MAX_FRAME_SIZE, s_companion_cli_capture);
+      _serial->writeFrame(out_frame, frame_len);
+    }
   } else if (cmd_frame[0] == CMD_SEND_TXT_MSG && len >= 14) {
     int i = 1;
     uint8_t txt_type = cmd_frame[i++];
