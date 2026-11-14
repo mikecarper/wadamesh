@@ -18832,21 +18832,6 @@ static void mediaMeshRefreshChoices() {
   }
 }
 
-// mediamesh.share: whether nodes only on the main mesh can still swap photos
-// and voice with this one (requests on both radios, answers where asked).
-static void mmShareCb(lv_event_t* e) {
-  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-  const int i = setChoiceIndex(e);
-  if (i < 0 || i > 1) return;
-  mediamesh::Config c = mediamesh::config();
-  c.share = (uint8_t)i;
-  mediamesh::set(c);
-  mediaMeshRefreshChoices();
-  if (g_lv.task) {
-    g_lv.task->showAlert(i ? TR("Sharing photos and voice with main-mesh nodes") : TR("Photos and voice on MediaMesh only"),
-                         1600);
-  }
-}
 
 // radio2.repeat: relay radio2 traffic on radio2.
 static void mmRelayToggleCb(lv_event_t* e) {
@@ -19349,15 +19334,6 @@ static void buildMediaMeshRadioCards() {
     setChoicePick(s_mm_use_row, mmUseIndex(cfg), cfg.mode != mediamesh::MODE_OFF);
   }
   s_mm_share_row = nullptr;
-  if (cfg.main_ok) {   // developer switch on (mediamesh.main): photos and voice may use the main mesh
-    const char* opts[2] = { TR("MediaMesh only"), TR("Share with them") };
-    s_mm_share_row = setChoiceRow(c, "Main-mesh nodes",
-                                  "MediaMesh only: photo and voice requests and answers stay on radio2, so nodes "
-                                  "without it can't swap them with you. Share: requests go out on both, and a "
-                                  "photo or clip asked for on the main mesh is answered there.",
-                                  opts, 2, cfg.share ? 1 : 0, mmShareCb);
-    setChoicePick(s_mm_share_row, cfg.share ? 1 : 0, cfg.mode != mediamesh::MODE_OFF);
-  }
   {
     NodePrefs* np = the_mesh.getNodePrefs();
     if (np && np->client_repeat) {

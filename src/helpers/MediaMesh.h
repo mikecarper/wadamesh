@@ -138,9 +138,9 @@ bool radio2Defined();
 /** Whether photos and voice are currently sent on radio2. */
 bool mediaActive();
 
-/** Whether photos and voice can go out at all: on radio2 alone, or anywhere
- *  with the developer switch (mediamesh.main) on. Off and without radio2 to
- *  transmit on, they don't go out, so the UI shouldn't offer to send them. */
+/** Whether photos and voice can go out at all: only on radio2 alone. Off and
+ *  without radio2 to transmit on, they don't go out, so the UI shouldn't offer
+ *  to send them. */
 bool mediaSendable();
 
 /** Whether a valid packet (passed the radio's CRC, parses as MeshCore) was

@@ -93,21 +93,22 @@ struct Config {
   uint8_t held = 0xFF;
   uint8_t held_cross = CROSS_AUTO;
   Params held_p;
-  // Developer switch (hidden `mediamesh.main`): photos and voice may use the
-  // main mesh. Off, they go on radio2 alone, whatever tx.media and
+  // Was the developer switch (`mediamesh.main`) letting photos and voice use
+  // the main mesh. Removed: it is always 0 and only keeps the saved layout.
+  // Photos and voice go on radio2 alone, whatever tx.media and
   // mediamesh.share say, and nowhere without radio2: a photo burst on the
   // main mesh is minutes of everyone's airtime.
   uint8_t main_ok = 0;
   Params p;
 };
 
-// Where photos and voice go: tx.media, or radio2 alone unless the developer
-// switch allows the main mesh (off stays off).
+// Where photos and voice go: radio2 alone, whatever tx.media says (off stays
+// off). Never the main mesh.
 inline uint8_t effectiveMedia(const Config& c) {
-  if (c.main_ok || c.media == TX_OFF) return c.media;
-  return TX_RADIO2;
+  return c.media == TX_OFF ? (uint8_t)TX_OFF : (uint8_t)TX_RADIO2;
 }
-inline bool effectiveShare(const Config& c) { return c.main_ok && c.share; }
+// mediamesh.share is off for good: transfers never go to the main mesh.
+inline bool effectiveShare(const Config&) { return false; }
 
 static constexpr uint8_t kNotHeld = 0xFF;
 
@@ -450,9 +451,9 @@ inline bool decode(const uint8_t* in, size_t len, Config& c) {
   memcpy(&d.p.freq, &in[8], 4);
   memcpy(&d.p.bw, &in[12], 4);
   d.p.preamble = (uint16_t)(in[16] | (in[17] << 8));
-  d.share = in[2] >= 3 && in[18] == 1 ? 1 : 0;
+  d.share = 0;   // mediamesh.share was removed: a saved "on" reads as off
   d.held = in[2] >= 4 && in[19] <= MODE_RXTX ? in[19] : kNotHeld;
-  d.main_ok = in[2] >= 5 && in[20] == 1 ? 1 : 0;
+  d.main_ok = 0;   // the developer switch was removed: a saved "on" reads as off
   d.relay = in[2] >= 6 && in[21] == 1 ? 1 : 0;
   if (in[2] >= 7) {
     Params hp;
@@ -1438,32 +1439,28 @@ inline CliResult handleCli(const char* cmd, Runtime& r, const Env& env, char* re
     return res;
   }
 
-  // ---- mediamesh.main (developer) ----
+  // ---- mediamesh.main (removed developer switch) ----
+  // Photos and voice never use the main mesh. "off" is accepted so old
+  // scripts and apps that turn it off still work.
   if (main_key) {
-    if (verb == GET && !*arg) { snprintf(reply, cap, "> %s", r.saved.main_ok ? "on" : "off"); return res; }
-    if (verb != SET || (strcmp(arg, "on") && strcmp(arg, "off"))) {
-      snprintf(reply, cap, "Error: use get mediamesh.main or set mediamesh.main on|off");
-      return res;
-    }
-    const uint8_t v = !strcmp(arg, "on") ? 1 : 0;
-    res.save = v != r.saved.main_ok;
-    r.saved.main_ok = v;
-    snprintf(reply, cap, "OK - mediamesh.main %s (%s)", v ? "on" : "off",
-             v ? "developer: photos and voice may use the main mesh" : "photos and voice on radio2 only");
+    if (verb == GET && !*arg) { snprintf(reply, cap, "> off"); return res; }
+    if (verb == SET && !strcmp(arg, "off")) { snprintf(reply, cap, "OK - mediamesh.main off"); return res; }
+    snprintf(reply, cap, "Error: photos and voice only go on MediaMesh (radio2)");
     return res;
   }
 
   // ---- mediamesh.share ----
+  // Removed: photo and voice requests and answers stay on radio2. "off" is
+  // accepted, since MeshCore Open TAK turns it off when saving MediaMesh.
   if (share) {
-    if (verb == GET && !*arg) { snprintf(reply, cap, "> %s", r.saved.share ? "on" : "off"); return res; }
-    if (verb != SET || (strcmp(arg, "on") && strcmp(arg, "off"))) {
-      snprintf(reply, cap, "Error: use get mediamesh.share or set mediamesh.share on|off");
+    if (verb == GET && !*arg) { snprintf(reply, cap, "> off"); return res; }
+    if (verb == SET && !strcmp(arg, "off")) {
+      res.save = r.saved.share != 0;
+      r.saved.share = 0;
+      snprintf(reply, cap, "OK - mediamesh.share off");
       return res;
     }
-    const uint8_t v = !strcmp(arg, "on") ? 1 : 0;
-    res.save = v != r.saved.share;
-    r.saved.share = v;
-    snprintf(reply, cap, "OK - mediamesh.share %s", v ? "on" : "off");
+    snprintf(reply, cap, "Error: photos and voice only go on MediaMesh (radio2)");
     return res;
   }
 

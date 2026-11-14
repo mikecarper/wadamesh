@@ -333,8 +333,8 @@ bool isMarked(const mesh::Packet* pkt) {
 
 void markMedia(const mesh::Packet* pkt, uint8_t channel_policy) {
   ensureLoaded();
-  if (!s_rt.saved.main_ok) { markPacket(pkt, effectiveMedia(s_rt.saved)); return; }
-  markPacket(pkt, s_rt.saved.media != TX_AUTO ? s_rt.saved.media : channel_policy);
+  (void)channel_policy;   // photos and voice: radio2 alone, never the main mesh
+  markPacket(pkt, effectiveMedia(s_rt.saved));
 }
 
 static FetchLog s_fetch;
@@ -344,9 +344,9 @@ void noteFetch(uint32_t sid) { s_fetch.note(sid, rxOrigin(), millis()); }
 void markTransfer(const mesh::Packet* pkt, bool request, bool has_sid, uint32_t sid, bool channel,
                   uint8_t channel_policy) {
   ensureLoaded();
-  // Without the developer switch: radio2 alone (effectiveMedia), share off.
-  const uint8_t media = !s_rt.saved.main_ok ? effectiveMedia(s_rt.saved)
-                        : s_rt.saved.media != TX_AUTO ? s_rt.saved.media : channel_policy;
+  // Radio2 alone (effectiveMedia), share off: never the main mesh.
+  (void)channel_policy;
+  const uint8_t media = effectiveMedia(s_rt.saved);
   const uint8_t asked = has_sid ? s_fetch.mask(sid, millis()) : 0;
   markPacket(pkt, transferPolicy(effectiveShare(s_rt.saved), request, asked, channel, media));
 }
@@ -525,7 +525,6 @@ bool mediaActive() {
 
 bool mediaSendable() {
   ensureLoaded();
-  if (s_rt.saved.main_ok) return true;
   return supported() && policyMask(s_rt, effectiveMedia(s_rt.saved)) == 2;
 }
 

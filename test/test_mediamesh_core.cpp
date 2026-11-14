@@ -99,30 +99,30 @@ static void testBlob() {
   v1[4] = 0;
   assert(decode(v1, sizeof v1, d) && d.media == TX_RADIO && d.cross == CROSS_OFF && !mediaOnRadio2(d));
 
-  // v3 keeps mediamesh.share; a v2 blob (18 bytes, saved before it) reads as off.
+  // mediamesh.share was removed: a saved "on" (v3 and later) reads as off.
   c.share = 1;
   encode(c, b);
-  assert(decode(b, sizeof b, d) && d.share == 1);
+  assert(decode(b, sizeof b, d) && d.share == 0);
   uint8_t v2[kBlobSizeV2];
   memcpy(v2, b, sizeof v2);
   v2[2] = 2;
   assert(decode(v2, sizeof v2, d) && d.share == 0 && d.media == TX_BOTH);
   assert(!decode(b, kBlobSizeV3, d));   // v4 cut short
   b[2] = 3;
-  assert(decode(b, kBlobSizeV3, d) && d.share == 1 && d.held == kNotHeld);   // v3: nothing held
+  assert(decode(b, kBlobSizeV3, d) && d.share == 0 && d.held == kNotHeld);   // v3: nothing held
   b[2] = kBlobVersion;
 
-  // v5 keeps the developer switch; a v4 blob (20 bytes) reads as off.
+  // The developer switch (v5 byte 20) was removed: a saved "on" reads as off.
   c.main_ok = 1;
   encode(c, b);
-  assert(decode(b, sizeof b, d) && d.main_ok == 1);
+  assert(decode(b, sizeof b, d) && d.main_ok == 0);
   assert(!decode(b, kBlobSizeV4, d));   // v5 cut short
   b[2] = 4;
-  assert(decode(b, kBlobSizeV4, d) && d.main_ok == 0 && d.share == 1);
+  assert(decode(b, kBlobSizeV4, d) && d.main_ok == 0 && d.share == 0);
   b[2] = kBlobVersion;
 }
 
-// Photos and voice stay off the main mesh unless the developer switch is on.
+// Photos and voice never use the main mesh: no developer switch, no sharing.
 static void testMainLockdown() {
   Config c; defaults(c);
   for (uint8_t m : {(uint8_t)TX_AUTO, (uint8_t)TX_RADIO, (uint8_t)TX_BOTH, (uint8_t)TX_RADIO2})
@@ -130,10 +130,10 @@ static void testMainLockdown() {
   c.media = TX_OFF;
   assert(effectiveMedia(c) == TX_OFF);
   c.share = 1;
+  c.main_ok = 1;   // even a stale in-memory value changes nothing
   assert(!effectiveShare(c));
-  c.main_ok = 1;
   c.media = TX_BOTH;
-  assert(effectiveMedia(c) == TX_BOTH && effectiveShare(c));
+  assert(effectiveMedia(c) == TX_RADIO2);
 
   Runtime r; defaults(r.saved);
   Env e = E();
@@ -141,11 +141,9 @@ static void testMainLockdown() {
   CliResult res = run("get mediamesh.main", r, e, out);
   assert(res.handled && !strcmp(out, "> off"));
   res = run("set mediamesh.main on", r, e, out);
-  assert(res.handled && res.save && r.saved.main_ok == 1 && !strncmp(out, "OK - mediamesh.main on", 22));
-  res = run("set mediamesh.main maybe", r, e, out);
-  assert(res.handled && !res.save && !strncmp(out, "Error", 5));
+  assert(res.handled && !res.save && r.saved.main_ok == 0 && !strncmp(out, "Error", 5));
   res = run("set mediamesh.main off", r, e, out);
-  assert(res.save && r.saved.main_ok == 0);
+  assert(res.handled && !res.save && !strcmp(out, "OK - mediamesh.main off"));
 }
 
 // radio2.status reports how long ago radio2 last heard a valid packet.
@@ -193,18 +191,19 @@ static void testShare() {
   defaults(r.saved);
   Env e = E();
   char out[200];
+  // The setting is gone: "on" is refused, "off" accepted (MeshCore Open TAK
+  // sends it when saving), and a stale in-memory "on" is cleared.
   CliResult res = run("get mediamesh.share", r, e, out);
   assert(res.handled && !strcmp(out, "> off"));
   res = run("set mediamesh.share on", r, e, out);
-  assert(res.handled && res.save && r.saved.share == 1 && !strcmp(out, "OK - mediamesh.share on"));
-  res = run("set mediamesh.share on", r, e, out);
-  assert(!res.save);
-  run("get mediamesh", r, e, out);
-  assert(strstr(out, "share=on"));
+  assert(res.handled && !res.save && r.saved.share == 0 && !strncmp(out, "Error", 5));
   run("set mediamesh.share maybe", r, e, out);
-  assert(!strncmp(out, "Error", 5) && r.saved.share == 1);
-  run("set mediamesh.share off", r, e, out);
-  assert(r.saved.share == 0);
+  assert(!strncmp(out, "Error", 5) && r.saved.share == 0);
+  r.saved.share = 1;
+  res = run("set mediamesh.share off", r, e, out);
+  assert(res.handled && res.save && r.saved.share == 0 && !strcmp(out, "OK - mediamesh.share off"));
+  run("get mediamesh", r, e, out);
+  assert(strstr(out, "share=off"));
 
   // Client Repeat forwards: from the profile a packet arrived on, less the
   // profiles its other copy was already forwarded on.

@@ -255,7 +255,6 @@ the millisecond clock, so setting the clock cannot stretch them.
 ```text
 get radio2.cross | set radio2.cross auto|on|off
 get tx.media | set tx.media auto|radio|radio2|both|off
-get mediamesh.share | set mediamesh.share on|off
 get radio2.repeat | set radio2.repeat on|off
 get tx.user | get tx.user "Alice" | set tx.user key:0123456789AB radio2
 get tx.channel | get tx.channel 0 | set tx.channel #wardriving both
@@ -285,17 +284,11 @@ Crossing never sends on an `rx`-only radio2.
   (`CMD_SEND_RAW_DATA`) and channel data type `0x5643`. An explicit choice wins
   over the contact's or channel's own; `auto` leaves it to them. The fetch
   requests asking for a photo or clip (binary `0x72`) follow it too.
-- **mediamesh.share** decides whether nodes only on the main mesh can still swap
-  photos and voice with this one:
-  - `off` (default, as mikecarper's keymindCascade): requests and answers both
-    follow `tx.media`. With MediaMesh that is radio2 only, so nothing of a
-    transfer touches the main mesh, and a node without radio2 can't fetch from
-    you or be fetched from.
-  - `on`: requests go out on both radios, so a sender on either one hears them.
-    A photo or clip asked for only on the main radio (remembered by session for
-    5 minutes) is answered there: on the main radio for a direct reply, on both
-    for a channel. Asked for on radio2, or not asked for, it stays on
-    `tx.media`'s route.
+- **mediamesh.share** was removed: photo and voice requests and answers always
+  stay on radio2, so nothing of a transfer touches the main mesh.
+  `get mediamesh.share` answers `off`, `set mediamesh.share off` is accepted,
+  and `on` is refused. The hidden developer switch `mediamesh.main` was removed
+  the same way.
 - **Client Repeat** moves the main radio to the off-grid channel, the allowed
   client-repeat frequency nearest the current one (918.000 MHz in the US,
   869.495 in EU868, 433.000 at 433) at 62.5 kHz, SF7, CR 4/5, as MeshCore Open
@@ -371,7 +364,7 @@ community mesh preset is refused on the device with "Conflicts with <preset>".
 ### Photos and voice stay off the main mesh
 
 Open TAK's photos and voice clips go out on radio2 alone (upstream MeshCore
-Open's channel image messages are left as they are), whatever `tx.media` and `mediamesh.share` say: a photo burst
+Open's channel image messages are left as they are), whatever `tx.media` says, and there is no setting that changes it: a photo burst
 on the main mesh takes minutes of everyone's airtime. With radio2 off, or
 receive-only, they are not sent, and the T-Deck says so when you hold the mic.
 Text, adverts and the rest follow `tx.media`/`radio2.cross` as before. Client
