@@ -332,6 +332,16 @@
 // the regular Heltec V4 has only 2 MB and no SD, so both conditions exclude it.
 // Not the T-LoRa Pager: its app slot is full (beta_103 overflowed by 2 KB with
 // the pack in; leaving it out frees about 7 KB).
+// The 240 px wide boards whose status bar grows a second row (the open chat's or the
+// settings page's title) while the screen is portrait, and whose control panel then
+// drops its battery and sensor lines (#833). The T-Deck Pro has the two-row bar always
+// and keeps its own HAS_TDECK_PRO branches. The V4-R8 build defines HELTEC_LORA_V4_TFT too.
+#if defined(HELTEC_LORA_V4_TFT)
+  #define CAP_TWO_ROW_BAR_PORTRAIT 1
+#else
+  #define CAP_TWO_ROW_BAR_PORTRAIT 0
+#endif
+
 #if CAP_SD && defined(BOARD_HAS_PSRAM) && \
     (defined(HAS_CROWPANEL_35) || defined(HAS_TDECK_PRO) || defined(HAS_TDECK_GT911) || \
      defined(HAS_THINKNODE_M9) || defined(HELTEC_LORA_V4_R8))
