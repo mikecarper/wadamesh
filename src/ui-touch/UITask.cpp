@@ -35180,6 +35180,10 @@ static const float SPEC_SPAN_MHZ  = 24.0f;   // total swept span (center ±12 MH
 // outside 150-960 silently kept the previous bin's tune and mis-attributed
 // its RSSI).
 static const float SPEC_FMIN_MHZ  = 150.0f;  // driver-enforced tuning floor (SX126x + LR11x0)
+// The fallbacks when the standalone has no channel of its own to show: the US
+// mesh channel and the MediaMesh default.
+static const float SPEC_MAIN_DEFAULT_MHZ = 910.525f, SPEC_MAIN_DEFAULT_BW = 0.0625f;
+static const float SPEC_MM_DEFAULT_MHZ   = 911.150f, SPEC_MM_DEFAULT_BW   = 0.25f;
 static const float SPEC_FMAX_MHZ  = 960.0f;  // driver-enforced tuning ceiling
 static const int   SPEC_DBM_MIN   = -130;    // chart Y floor (dBm)
 static const int   SPEC_DBM_MAX   = -50;     // chart Y ceiling (dBm)
@@ -35251,8 +35255,11 @@ static float       s_spec_main_f    = 0.0f;       // the mesh channel, kept whil
 static float       s_spec_main_bw   = 0.0625f;
 static lv_obj_t*   s_spec_mm_tag    = nullptr;    // "MediaMesh" over radio2's marker
 static lv_obj_t*   s_spec_gear_btn  = nullptr;    // Spectrum settings
-// radio2's frequency and bandwidth (MHz) while it's on (tempradio2 included).
+// MediaMesh's frequency and bandwidth (MHz): radio2's while it's on (tempradio2
+// included), else 911.150 MHz at 250 kHz. True when it is radio2's own.
 static bool specRadio2(float& f, float& bw) {
+  f = SPEC_MM_DEFAULT_MHZ;
+  bw = SPEC_MM_DEFAULT_BW;
 #if defined(ESP32)
   if (!mediamesh::supported()) return false;
   const mediamesh::Runtime& r = mediamesh::runtime();
@@ -35260,10 +35267,9 @@ static bool specRadio2(float& f, float& bw) {
   const mediamesh::Profile2 a = r.active2();
   if (a.p.freq < SPEC_FMIN_MHZ || a.p.freq > SPEC_FMAX_MHZ) return false;
   f = a.p.freq;
-  bw = a.p.bw > 0 ? a.p.bw / 1000.0f : 0.25f;
+  if (a.p.bw > 0) bw = a.p.bw / 1000.0f;
   return true;
 #else
-  (void)f; (void)bw;
   return false;
 #endif
 }
@@ -35561,9 +35567,10 @@ static void spectrumDrawPlot() {
   }
   if (cx >= 0 && cx < W)
     for (int y = 0; y < H; y++) if ((y & 3) < 2) b[y * W + cx] = mark;
-  // radio2 (Spectrum settings > Show MediaMesh), unless it's the channel in focus
+  // MediaMesh (Spectrum settings > Show MediaMesh), unless it's the channel in focus
   float mf, mbw;
-  if (s_spec_mm_show && !s_spec_mm_view && specRadio2(mf, mbw)) {
+  if (s_spec_mm_show && !s_spec_mm_view) {
+    specRadio2(mf, mbw);
     const int mx = specFreqX(mf, W);
     const lv_color_t mm = lv_color_hex(SPEC_MM_COLOR);
     if (mx >= 0 && mx < W)
@@ -35897,7 +35904,8 @@ static void specChipText(lv_obj_t* b, const char* txt) {
 static void spectrumApplySpan() {
   // The channel in focus: radio2 in the MediaMesh view, else the mesh's.
   float mf = 0.0f, mbw = 0.0f;
-  const bool mm_on = s_spec_mm_show && specRadio2(mf, mbw);
+  specRadio2(mf, mbw);
+  const bool mm_on = s_spec_mm_show;
   if (!mm_on || !s_spec_chan_view) s_spec_mm_view = false;
   s_spec_center = s_spec_mm_view ? mf : s_spec_main_f;
   s_spec_ch_bw  = s_spec_mm_view ? mbw : s_spec_main_bw;
@@ -35960,13 +35968,12 @@ static void spectrumApplySpan() {
   spectrumTrackRange(false);
   spectrumDrawPlot();
 }
-// Band -> Channel -> MediaMesh (when its setting is on and radio2 is) -> Band.
+// Band -> Channel -> MediaMesh (when its setting is on) -> Band.
 static void spectrumViewCb(lv_event_t* e) {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-  float f, bw;
   if (!s_spec_chan_view) {
     s_spec_chan_view = true;
-  } else if (!s_spec_mm_view && s_spec_mm_show && specRadio2(f, bw)) {
+  } else if (!s_spec_mm_view && s_spec_mm_show) {
     s_spec_mm_view = true;
   } else {
     s_spec_chan_view = false;
@@ -36013,11 +36020,11 @@ static void spectrumSettingsCb(lv_event_t* e) {
   lv_obj_set_width(t, tw);
   lv_obj_set_pos(t, 0, 0);
   float f, bw;
-  char help[112];
+  char help[136];
   if (specRadio2(f, bw))
     snprintf(help, sizeof help, TR("Marks radio2 (%.3f MHz) on the plot and adds a MediaMesh view to the Band / Channel button."), (double)f);
   else
-    snprintf(help, sizeof help, "%s", TR("Marks radio2 on the plot and adds a MediaMesh view to the Band / Channel button. radio2 is off now."));
+    snprintf(help, sizeof help, TR("Marks MediaMesh on the plot and adds a MediaMesh view to the Band / Channel button. radio2 is off: %.3f MHz, the default."), (double)f);
   lv_obj_t* h = lv_label_create(row);
   lv_label_set_text(h, help);
   lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
@@ -37577,7 +37584,8 @@ static void openSpectrumPage() {
 
   // ---- claim the radio + compute the band BEFORE building UI ----
   NodePrefs* pr = the_mesh.getNodePrefs();
-  float center = pr ? pr->freq : 915.0f;
+  // The mesh channel; the US one (910.525 MHz) if the radio has none to give.
+  float center = (pr && pr->freq >= SPEC_FMIN_MHZ && pr->freq <= SPEC_FMAX_MHZ) ? pr->freq : SPEC_MAIN_DEFAULT_MHZ;
   s_spec_sf   = pr ? pr->sf : 7;
   s_spec_cr   = pr ? pr->cr : 5;
   float span = SPEC_SPAN_MHZ;
@@ -37870,7 +37878,7 @@ static void openSpectrumPage() {
 
 #else
   s_spec_center = center;
-  s_spec_ch_bw  = (pr && pr->bw > 0) ? pr->bw / 1000.0f : 0.0625f;
+  s_spec_ch_bw  = (pr && pr->bw > 0) ? pr->bw / 1000.0f : SPEC_MAIN_DEFAULT_BW;
   s_spec_main_f  = s_spec_center;
   s_spec_main_bw = s_spec_ch_bw;
   s_spec_mm_view = false;

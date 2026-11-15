@@ -190,14 +190,18 @@ further out is marked once it has been in direct range.
 
 The Spectrum app can show radio2 as well as the mesh channel. Tap the gear at
 the bottom right of the waterfall and turn on **Show MediaMesh** (saved, off by
-default). While radio2 is on (`tempradio2` included):
+default). It uses the standalone's own channels: the sweep is centred on the
+main channel and MediaMesh is radio2's frequency while radio2 is on
+(`tempradio2` included). When one isn't there, it falls back to the
+CascadiaMesh pair: **910.525 MHz** for the main channel and **911.150 MHz**
+(250 kHz) for MediaMesh, so a standalone with radio2 off still sees where
+MediaMesh traffic is.
 
-- **Band** draws a fuchsia marker labelled *MediaMesh* at radio2's frequency
-  (911.150 MHz by default), when it falls in the 24 MHz sweep. That is the case
-  for any US main channel, since the sweep is centred on it.
+- **Band** draws a fuchsia marker labelled *MediaMesh* at that frequency, when
+  it falls in the 24 MHz sweep. That is the case for any US main channel.
 - The view button goes **Band → Channel → MediaMesh**. *MediaMesh* zooms on
   radio2 the way *Channel* zooms on the mesh channel: 16 channel widths around
-  it, at most 4 MHz. The Channel and Busy tiles then measure radio2's channel.
+  it, at most 4 MHz. The Channel and Busy tiles then measure that channel.
 
 The sweep runs on the main radio chip, which tunes 150–960 MHz, so the
 MediaMesh view works whatever the main channel is. The T-Deck Pro's e-paper
