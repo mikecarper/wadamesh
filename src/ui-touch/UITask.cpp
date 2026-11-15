@@ -35180,6 +35180,10 @@ static const float SPEC_SPAN_MHZ  = 24.0f;   // total swept span (center ±12 MH
 // outside 150-960 silently kept the previous bin's tune and mis-attributed
 // its RSSI).
 static const float SPEC_FMIN_MHZ  = 150.0f;  // driver-enforced tuning floor (SX126x + LR11x0)
+// The fallbacks when the standalone has no channel of its own to show: the US
+// mesh channel and the MediaMesh default.
+static const float SPEC_MAIN_DEFAULT_MHZ = 910.525f, SPEC_MAIN_DEFAULT_BW = 0.0625f;
+static const float SPEC_MM_DEFAULT_MHZ   = 911.150f, SPEC_MM_DEFAULT_BW   = 0.25f;
 static const float SPEC_FMAX_MHZ  = 960.0f;  // driver-enforced tuning ceiling
 static const int   SPEC_DBM_MIN   = -130;    // chart Y floor (dBm)
 static const int   SPEC_DBM_MAX   = -50;     // chart Y ceiling (dBm)
@@ -35239,8 +35243,38 @@ static auto&       s_spec_acc = psramStatic<int16_t[SPEC_BINS]>();         // st
 static uint32_t    s_spec_row_ms    = 0;
 static uint8_t     s_spec_window    = 0;          // waterfall history: 0 live, 1 one minute, 2 ten minutes
 static bool        s_spec_chan_view = false;      // false = the 24 MHz band, true = zoomed on our channel
-static float       s_spec_center    = 0.0f;       // our channel (MHz)
+static float       s_spec_center    = 0.0f;       // our channel (MHz); radio2's in the MediaMesh view
 static float       s_spec_ch_bw     = 0.0625f;    // our channel's bandwidth (MHz)
+// MediaMesh (Spectrum settings): radio2's frequency marked on the plot, and a third
+// view zoomed on it. s_spec_center / s_spec_ch_bw are whichever channel is in focus.
+static const uint32_t SPEC_MM_COLOR = 0xD946EF;   // MediaMesh fuchsia, as the map's ring
+static const char kSpecMmKey[] = "spec_mm";
+static bool        s_spec_mm_show   = false;      // the setting (saved)
+static bool        s_spec_mm_view   = false;      // the view chip is on MediaMesh (zoomed on radio2)
+static float       s_spec_main_f    = 0.0f;       // the mesh channel, kept while radio2 is in focus
+static float       s_spec_main_bw   = 0.0625f;
+static lv_obj_t*   s_spec_mm_tag    = nullptr;    // "MediaMesh" over radio2's marker
+static lv_obj_t*   s_spec_gear_btn  = nullptr;    // Spectrum settings
+// MediaMesh's frequency and bandwidth (MHz): radio2's while it's on (tempradio2
+// included), else 911.150 MHz at 250 kHz. True when it is radio2's own.
+static bool specRadio2(float& f, float& bw) {
+  f = SPEC_MM_DEFAULT_MHZ;
+  bw = SPEC_MM_DEFAULT_BW;
+#if defined(ESP32)
+  if (!mediamesh::supported()) return false;
+  const mediamesh::Runtime& r = mediamesh::runtime();
+  if (!r.enabled()) return false;
+  const mediamesh::Profile2 a = r.active2();
+  if (a.p.freq < SPEC_FMIN_MHZ || a.p.freq > SPEC_FMAX_MHZ) return false;
+  f = a.p.freq;
+  if (a.p.bw > 0) bw = a.p.bw / 1000.0f;
+  return true;
+#else
+  return false;
+#endif
+}
+static lv_obj_t* ctOpenOptionSheet(const char* title);   // the Contacts option-sheet shell
+static void ctSortSheetClose();
 static uint64_t    s_spec_busy_bits = 0;          // last 64 sweeps: was our channel busy
 static uint8_t     s_spec_busy_n    = 0;
 static int         s_spec_disp_lo = -130, s_spec_disp_hi = -80;   // plot range, snapped to 5 dB
@@ -35249,7 +35283,7 @@ static lv_obj_t*   s_spec_grid_lbl[3] = {};       // dB beside the plot: top, mi
 static lv_obj_t*   s_spec_peak_tag  = nullptr;    // peak frequency, floating over the plot
 static lv_obj_t*   s_spec_axis_c    = nullptr;    // our channel's frequency under its marker
 static lv_obj_t*   s_spec_axis_r    = nullptr;
-static lv_obj_t*   s_spec_view_btn  = nullptr;    // Band / Channel
+static lv_obj_t*   s_spec_view_btn  = nullptr;    // Band / Channel / MediaMesh
 static lv_obj_t*   s_spec_win_btn   = nullptr;    // Live / 1 min / 10 min
 static int         s_spec_plot_x = 0, s_spec_plot_y = 0;
 static lv_color_t  s_spec_heat_lut[64];
@@ -35533,6 +35567,15 @@ static void spectrumDrawPlot() {
   }
   if (cx >= 0 && cx < W)
     for (int y = 0; y < H; y++) if ((y & 3) < 2) b[y * W + cx] = mark;
+  // MediaMesh (Spectrum settings > Show MediaMesh), unless it's the channel in focus
+  float mf, mbw;
+  if (s_spec_mm_show && !s_spec_mm_view) {
+    specRadio2(mf, mbw);
+    const int mx = specFreqX(mf, W);
+    const lv_color_t mm = lv_color_hex(SPEC_MM_COLOR);
+    if (mx >= 0 && mx < W)
+      for (int y = 0; y < H; y++) if ((y & 3) < 2) b[y * W + mx] = mm;
+  }
   lv_obj_invalidate(s_spec_plot);
 }
 
@@ -35785,6 +35828,8 @@ static void closeSpectrumPage() {
 #if !defined(HAS_TDECK_PRO)
   s_spec_plot = nullptr; s_spec_ramp = nullptr; s_spec_peak_tag = nullptr;
   s_spec_axis_c = nullptr; s_spec_axis_r = nullptr; s_spec_view_btn = nullptr; s_spec_win_btn = nullptr;
+  s_spec_mm_tag = nullptr; s_spec_gear_btn = nullptr;
+  ctSortSheetClose();                 // Spectrum settings, if left open
   for (int i = 0; i < 4; i++) s_spec_tile_val[i] = nullptr;
   for (int i = 0; i < 3; i++) s_spec_grid_lbl[i] = nullptr;
   if (s_spec_plot_buf) { heap_caps_free(s_spec_plot_buf); s_spec_plot_buf = nullptr; }
@@ -35857,6 +35902,13 @@ static void specChipText(lv_obj_t* b, const char* txt) {
 // Point the sweep at the whole band or at our channel and start over: the bins,
 // the peak hold, the busy history and the waterfall all describe the old span.
 static void spectrumApplySpan() {
+  // The channel in focus: radio2 in the MediaMesh view, else the mesh's.
+  float mf = 0.0f, mbw = 0.0f;
+  specRadio2(mf, mbw);
+  const bool mm_on = s_spec_mm_show;
+  if (!mm_on || !s_spec_chan_view) s_spec_mm_view = false;
+  s_spec_center = s_spec_mm_view ? mf : s_spec_main_f;
+  s_spec_ch_bw  = s_spec_mm_view ? mbw : s_spec_main_bw;
   float span = SPEC_SPAN_MHZ;
   if (s_spec_chan_view) {               // 16 channel widths: the channel and its neighbours
     span = s_spec_ch_bw * 16.0f;
@@ -35898,14 +35950,88 @@ static void spectrumApplySpan() {
     if (x > s_spec_plot_x + s_spec_plot_w - ew - tw) x = s_spec_plot_x + s_spec_plot_w - ew - tw;
     lv_obj_set_x(s_spec_axis_c, x);
   }
-  specChipText(s_spec_view_btn, s_spec_chan_view ? TR("Channel") : TR("Band"));
+  specChipText(s_spec_view_btn, s_spec_mm_view ? TR("MediaMesh") : s_spec_chan_view ? TR("Channel") : TR("Band"));
+  if (s_spec_mm_tag) {   // over radio2's marker, when it's in the span and not already the focus
+    const bool show = mm_on && !s_spec_mm_view && mf >= start && mf <= stop;
+    if (show) {
+      lv_label_set_text(s_spec_mm_tag, TR("MediaMesh"));
+      const char* t = lv_label_get_text(s_spec_mm_tag);
+      const int tw = lv_txt_get_width(t, strlen(t), &g_font_12, 0, LV_TEXT_FLAG_NONE);
+      int x = s_spec_plot_x + specFreqX(mf, s_spec_plot_w) + SC(3);
+      if (x > s_spec_plot_x + s_spec_plot_w - tw - 2) x = s_spec_plot_x + specFreqX(mf, s_spec_plot_w) - tw - SC(3);
+      lv_obj_set_pos(s_spec_mm_tag, x, s_spec_plot_y + 1);
+      lv_obj_clear_flag(s_spec_mm_tag, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(s_spec_mm_tag, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
   spectrumTrackRange(false);
   spectrumDrawPlot();
 }
+// Band -> Channel -> MediaMesh (when its setting is on) -> Band.
 static void spectrumViewCb(lv_event_t* e) {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-  s_spec_chan_view = !s_spec_chan_view;
+  if (!s_spec_chan_view) {
+    s_spec_chan_view = true;
+  } else if (!s_spec_mm_view && s_spec_mm_show) {
+    s_spec_mm_view = true;
+  } else {
+    s_spec_chan_view = false;
+    s_spec_mm_view = false;
+  }
   spectrumApplySpan();
+}
+
+// ---- Spectrum settings: the MediaMesh switch ----
+static void spectrumMmSwitchCb(lv_event_t* e) {
+  if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+  s_spec_mm_show = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  const uint8_t v = s_spec_mm_show ? 1 : 0;
+  touchPrefsSetBlob(kSpecMmKey, &v, 1);
+  if (!s_spec_mm_show) s_spec_mm_view = false;
+  if (s_spec_root) spectrumApplySpan();
+}
+static void spectrumMmRowTapCb(lv_event_t* e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  lv_obj_t* sw = (lv_obj_t*)lv_event_get_user_data(e);
+  if (!sw || lv_event_get_target(e) == sw) return;   // the switch toggles itself
+  if (lv_obj_has_state(sw, LV_STATE_CHECKED)) lv_obj_clear_state(sw, LV_STATE_CHECKED);
+  else                                        lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_event_send(sw, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+static void spectrumSettingsCb(lv_event_t* e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  lv_obj_t* card = ctOpenOptionSheet(TR("Spectrum settings"));
+  lv_obj_t* row = lv_obj_create(card);
+  lv_obj_remove_style_all(row);
+  lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+  lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t* sw = lv_switch_create(row);
+  lv_obj_align(sw, LV_ALIGN_TOP_RIGHT, 0, 0);
+  if (s_spec_mm_show) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(sw, spectrumMmSwitchCb, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(row, spectrumMmRowTapCb, LV_EVENT_CLICKED, sw);
+  // the card is the screen less 24 px, padded 12 a side; its layout hasn't run yet
+  const lv_coord_t tw = lv_disp_get_hor_res(nullptr) - 48 - SC(58);
+  lv_obj_t* t = lv_label_create(row);
+  lv_label_set_text(t, TR("Show MediaMesh"));
+  lv_obj_set_style_text_font(t, &g_font_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(t, lv_color_hex(COLOR_TEXT), LV_PART_MAIN);
+  lv_obj_set_width(t, tw);
+  lv_obj_set_pos(t, 0, 0);
+  float f, bw;
+  char help[136];
+  if (specRadio2(f, bw))
+    snprintf(help, sizeof help, TR("Marks radio2 (%.3f MHz) on the plot and adds a MediaMesh view to the Band / Channel button."), (double)f);
+  else
+    snprintf(help, sizeof help, TR("Marks MediaMesh on the plot and adds a MediaMesh view to the Band / Channel button. radio2 is off: %.3f MHz, the default."), (double)f);
+  lv_obj_t* h = lv_label_create(row);
+  lv_label_set_text(h, help);
+  lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_font(h, &g_font_12, LV_PART_MAIN);
+  lv_obj_set_style_text_color(h, lv_color_hex(COLOR_SUB), LV_PART_MAIN);
+  lv_obj_set_width(h, tw);
+  lv_obj_set_pos(h, 0, lv_font_get_line_height(&g_font_14) + SC(2));
 }
 static void spectrumWindowCb(lv_event_t* e) {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -37458,7 +37584,8 @@ static void openSpectrumPage() {
 
   // ---- claim the radio + compute the band BEFORE building UI ----
   NodePrefs* pr = the_mesh.getNodePrefs();
-  float center = pr ? pr->freq : 915.0f;
+  // The mesh channel; the US one (910.525 MHz) if the radio has none to give.
+  float center = (pr && pr->freq >= SPEC_FMIN_MHZ && pr->freq <= SPEC_FMAX_MHZ) ? pr->freq : SPEC_MAIN_DEFAULT_MHZ;
   s_spec_sf   = pr ? pr->sf : 7;
   s_spec_cr   = pr ? pr->cr : 5;
   float span = SPEC_SPAN_MHZ;
@@ -37751,7 +37878,14 @@ static void openSpectrumPage() {
 
 #else
   s_spec_center = center;
-  s_spec_ch_bw  = (pr && pr->bw > 0) ? pr->bw / 1000.0f : 0.0625f;
+  s_spec_ch_bw  = (pr && pr->bw > 0) ? pr->bw / 1000.0f : SPEC_MAIN_DEFAULT_BW;
+  s_spec_main_f  = s_spec_center;
+  s_spec_main_bw = s_spec_ch_bw;
+  s_spec_mm_view = false;
+  {
+    uint8_t v = 0;
+    s_spec_mm_show = touchPrefsGetBlob(kSpecMmKey, &v, 1) == 1 && v == 1;
+  }
   specBuildHeatLut();
   const int lh12 = lv_font_get_line_height(&g_font_12);
   const int lh16 = lv_font_get_line_height(&g_font_16);
@@ -37836,6 +37970,11 @@ static void openSpectrumPage() {
   lv_label_set_text(s_spec_peak_tag, "");
   lv_obj_set_style_text_font(s_spec_peak_tag, &g_font_12, LV_PART_MAIN);
   lv_obj_set_style_text_color(s_spec_peak_tag, lv_color_hex(0xF5A623), LV_PART_MAIN);
+  s_spec_mm_tag = lv_label_create(s_spec_root);   // placed by spectrumApplySpan
+  lv_label_set_text(s_spec_mm_tag, "");
+  lv_obj_set_style_text_font(s_spec_mm_tag, &g_font_12, LV_PART_MAIN);
+  lv_obj_set_style_text_color(s_spec_mm_tag, lv_color_hex(SPEC_MM_COLOR), LV_PART_MAIN);
+  lv_obj_add_flag(s_spec_mm_tag, LV_OBJ_FLAG_HIDDEN);
   y += ph + 2 * ins + SC(6);
 
   // ---- waterfall: newest line on top ----
@@ -37871,6 +38010,10 @@ static void openSpectrumPage() {
   // right-anchored to the root, so the chip grows leftwards when its text changes
   // (and no size is read before the first layout)
   lv_obj_align(s_spec_win_btn, LV_ALIGN_TOP_RIGHT, -(sw - fx - fw) - ins - SC(4), y + ins + SC(4));
+  // Spectrum settings, bottom right of the waterfall
+  s_spec_gear_btn = specChip(s_spec_root, LV_SYMBOL_SETTINGS, spectrumSettingsCb);
+  lv_obj_align(s_spec_gear_btn, LV_ALIGN_TOP_RIGHT, -(sw - fx - fw) - ins - SC(4),
+               y + ins + wh - SC(4) - (lv_font_get_line_height(&g_font_12) + SC(6)));
   y += wh + 2 * ins + SC(3);
 
   // ---- frequency axis: band edges, and our channel under its marker ----
