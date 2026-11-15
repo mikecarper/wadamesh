@@ -327,6 +327,16 @@
   #define CAP_TILES_ON_STORAGE 0
 #endif
 
+// The 240 px wide boards whose status bar grows a second row (the open chat's or the
+// settings page's title) while the screen is portrait, and whose control panel then
+// drops its battery and sensor lines (#833). The T-Deck Pro has the two-row bar always
+// and keeps its own HAS_TDECK_PRO branches. The V4-R8 build defines HELTEC_LORA_V4_TFT too.
+#if defined(HELTEC_LORA_V4_TFT)
+  #define CAP_TWO_ROW_BAR_PORTRAIT 1
+#else
+  #define CAP_TWO_ROW_BAR_PORTRAIT 0
+#endif
+
 // The optional emoji pack and its tab/recent picker need both removable SD and
 // 8 MB PSRAM. Every enabled SD target below has an 8 MB PSRAM board definition;
 // the regular Heltec V4 has only 2 MB and no SD, so both conditions exclude it.
