@@ -80,7 +80,7 @@ static void testAirtime() {
 
 static void testBlob() {
   Config c; defaults(c);
-  assert(c.media == TX_AUTO && c.cross == CROSS_AUTO && c.mode == MODE_OFF);
+  assert(c.media == TX_AUTO && c.cross == CROSS_OFF && c.held_cross == CROSS_OFF && c.mode == MODE_OFF);
   c.mode = MODE_RXTX; c.media = TX_BOTH; c.cross = CROSS_ON; c.p.preamble = 72;
   uint8_t b[kBlobSize];
   assert(encode(c, b) == kBlobSize);
@@ -119,6 +119,20 @@ static void testBlob() {
   assert(!decode(b, kBlobSizeV4, d));   // v5 cut short
   b[2] = 4;
   assert(decode(b, kBlobSizeV4, d) && d.main_ok == 0 && d.share == 0);
+  b[2] = kBlobVersion;
+
+  // Bridging is off by default since v8: an older blob's saved and held cross
+  // modes read as off, whatever they were; a v8 one keeps its choice.
+  c.cross = CROSS_ON; c.held_cross = CROSS_AUTO;
+  encode(c, b);
+  assert(b[2] == 8 && decode(b, sizeof b, d) && d.cross == CROSS_ON && d.held_cross == CROSS_AUTO);
+  for (uint8_t v = 2; v <= 7; v++) {
+    b[2] = v;
+    assert(decode(b, sizeof b, d) && d.cross == CROSS_OFF && d.held_cross == CROSS_OFF);
+    assert(d.mode == MODE_RXTX && d.media == TX_BOTH);   // the rest is kept
+  }
+  b[2] = 9;
+  assert(!decode(b, sizeof b, d));
   b[2] = kBlobVersion;
 }
 
@@ -381,6 +395,12 @@ static void testCli() {
   run("set tx.media maybe", r, e, out);
   assert(!strcmp(out, "Error: use get tx.media or set tx.media auto|radio|radio2|both|off"));
 
+  run("get radio2.cross", r, e, out);
+  assert(!strcmp(out, "> off"));   // bridging is off by default
+  res = run("set radio2.cross on", r, e, out);
+  assert(res.handled && res.save && !strcmp(out, "OK"));
+  run("get radio2.cross", r, e, out);
+  assert(!strcmp(out, "> on"));
   res = run("set radio2.cross off", r, e, out);
   assert(res.handled && res.save && !strcmp(out, "OK"));
   run("get radio2.cross", r, e, out);
@@ -820,9 +840,11 @@ static void testDefaultOn() {
   assert(!photoVoiceDefault(c));
   Config e;
   defaults(e);
-  e.media = TX_AUTO;
-  e.cross = CROSS_ON;   // Everything
-  assert(!photoVoiceDefault(e) && e.media == TX_AUTO && e.cross == CROSS_ON);
+  e.media = TX_BOTH;   // chosen in the Terminal
+  assert(!photoVoiceDefault(e) && e.media == TX_BOTH && e.cross == CROSS_OFF);
+  e.media = TX_AUTO;   // never chosen, even with bridging set: moves once
+  e.cross = CROSS_ON;
+  assert(photoVoiceDefault(e) && e.media == TX_RADIO2 && e.cross == CROSS_OFF);
 }
 
 int main() {

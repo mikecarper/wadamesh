@@ -76,7 +76,7 @@ struct Profile2 {
 struct Config {
   uint8_t mode = MODE_OFF;       // radio2: off, rx (listen only) or rxtx
   uint8_t media = TX_AUTO;       // tx.media: where photos and voice are sent
-  uint8_t cross = CROSS_AUTO;    // radio2.cross
+  uint8_t cross = CROSS_OFF;     // radio2.cross: off unless set in the Terminal
   // mediamesh.share: 0 keeps photo/voice transfers on tx.media's route (with
   // MediaMesh, radio2 only: requests and answers, as keymindCascade does). 1
   // also serves nodes only on the main mesh: requests go out on both radios,
@@ -91,7 +91,7 @@ struct Config {
   // kNotHeld when Client Repeat is off. held_p and held_cross are its radio
   // settings and radio2.cross then (held_p.freq 0: not recorded, kept as is).
   uint8_t held = 0xFF;
-  uint8_t held_cross = CROSS_AUTO;
+  uint8_t held_cross = CROSS_OFF;
   Params held_p;
   // Was the developer switch (`mediamesh.main`) letting photos and voice use
   // the main mesh. Removed: it is always 0 and only keeps the saved layout.
@@ -290,7 +290,7 @@ static constexpr uint32_t kMaxScheduleSeconds = 24UL * 24UL * 3600UL;   // 24 da
 inline void defaults(Config& c) {
   c.mode = MODE_OFF;
   c.media = TX_AUTO;
-  c.cross = CROSS_AUTO;
+  c.cross = CROSS_OFF;
   c.share = 0;
   c.relay = 0;
   c.held = kNotHeld;
@@ -307,11 +307,10 @@ inline void defaults(Config& c) {
 inline bool defaultOnFor(float main_freq) { return main_freq >= 902.0f && main_freq <= 928.0f; }
 
 // What's sent on radio2 starts as the settings page's "Photos & voice": photos
-// and voice go on radio2, nothing else crosses. A radio that never chose (it
-// has the old automatic pair, which the page shows as Custom) moves to it
-// once. True if `c` changed.
+// and voice go on radio2, nothing else crosses. A radio that never chose (its
+// media still automatic) moves to it once. True if `c` changed.
 inline bool photoVoiceDefault(Config& c) {
-  if (c.media != TX_AUTO || c.cross != CROSS_AUTO) return false;
+  if (c.media != TX_AUTO) return false;
   c.media = TX_RADIO2;
   c.cross = CROSS_OFF;
   return true;
@@ -402,9 +401,11 @@ inline const char* maskName(uint8_t mask) {
 // mediamesh.share; older blobs read as share off. v4 adds byte 19, the radio2
 // mode Client Repeat is holding (0xFF none). v5 adds byte 20, the developer
 // switch (mediamesh.main). v6 adds byte 21, radio2.repeat. v7 adds bytes
-// 22-34, the radio2 settings and cross mode Client Repeat is holding.
+// 22-34, the radio2 settings and cross mode Client Repeat is holding. v8 is
+// v7 with bridging off by default: an older blob's cross modes (saved and
+// held) read as off, once, and the next save writes v8.
 
-static constexpr uint8_t kBlobVersion = 7;
+static constexpr uint8_t kBlobVersion = 8;
 static constexpr size_t kBlobSize = 35;
 static constexpr size_t kBlobSizeV6 = 22;
 static constexpr size_t kBlobSizeV5 = 21;
@@ -434,9 +435,9 @@ inline size_t encode(const Config& c, uint8_t out[kBlobSize]) {
 }
 
 inline bool decode(const uint8_t* in, size_t len, Config& c) {
-  if (!in || len < kBlobSizeV2 || in[0] != 'M' || in[1] != 'M' || in[2] < 1 || in[2] > 7) return false;
+  if (!in || len < kBlobSizeV2 || in[0] != 'M' || in[1] != 'M' || in[2] < 1 || in[2] > kBlobVersion) return false;
   if ((in[2] == 3 && len < kBlobSizeV3) || (in[2] == 4 && len < kBlobSizeV4) || (in[2] == 5 && len < kBlobSizeV5)
-      || (in[2] == 6 && len < kBlobSizeV6) || (in[2] == 7 && len < kBlobSize))
+      || (in[2] == 6 && len < kBlobSizeV6) || (in[2] >= 7 && len < kBlobSize))
     return false;
   Config d;
   d.mode = in[3] <= MODE_RXTX ? in[3] : (uint8_t)MODE_OFF;
@@ -445,7 +446,7 @@ inline bool decode(const uint8_t* in, size_t len, Config& c) {
     d.cross = CROSS_OFF;
   } else {
     d.media = in[4] <= TX_OFF ? in[4] : (uint8_t)TX_AUTO;
-    d.cross = in[7] <= CROSS_OFF ? in[7] : (uint8_t)CROSS_AUTO;
+    d.cross = in[7] <= CROSS_OFF ? in[7] : (uint8_t)CROSS_OFF;
   }
   d.p.sf = in[5]; d.p.cr = in[6];
   memcpy(&d.p.freq, &in[8], 4);
@@ -463,7 +464,13 @@ inline bool decode(const uint8_t* in, size_t len, Config& c) {
     hp.cr = in[31];
     hp.preamble = (uint16_t)(in[32] | (in[33] << 8));
     if (validParams(hp)) d.held_p = hp;
-    d.held_cross = in[34] <= CROSS_OFF ? in[34] : (uint8_t)CROSS_AUTO;
+    d.held_cross = in[34] <= CROSS_OFF ? in[34] : (uint8_t)CROSS_OFF;
+  }
+  // Bridging is off by default since v8: a radio updated from older firmware
+  // turns it off (saved and held), whatever it was.
+  if (in[2] < 8) {
+    d.cross = CROSS_OFF;
+    d.held_cross = CROSS_OFF;
   }
   if (!validParams(d.p)) return false;
   c = d;
@@ -1249,7 +1256,7 @@ inline bool holdForClientRepeat(Runtime& r, bool on, const Params* beside = null
     c.cross = c.held_cross;
     c.held = kNotHeld;
     c.held_p = Params();
-    c.held_cross = CROSS_AUTO;
+    c.held_cross = CROSS_OFF;
     return true;
   }
   // What Client Repeat wants radio2 to be.

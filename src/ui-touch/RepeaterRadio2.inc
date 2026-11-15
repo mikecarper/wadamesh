@@ -4,7 +4,7 @@
 // console's antenna button for the repeater we are logged in to. It talks to the
 // repeater through the same remote CLI as the console, with the radio-profile
 // commands of mikecarper/MeshCore (MEDIAMESH.md has the local equivalents):
-//   get/set radio2, get radio, get/set radio2.cross, get/set tx.reply,
+//   get/set radio2, get radio, get radio2.cross (set off with a profile), get/set tx.reply,
 //   get/set tempradio2, get radio2.status
 // One command is in flight at a time, tagged "NN|" so its reply (the repeater
 // echoes the tag) is told apart from the console's own; untagged and foreign
@@ -64,7 +64,7 @@ static lv_timer_t* timer = nullptr;
 // Widgets (all children of root; nulled on close).
 static lv_obj_t *w_line, *w_main_f, *w_main_d, *w_r2_f, *w_r2_d, *w_r2_box, *w_link, *w_link_t;
 static lv_obj_t *w_mode, *w_freq, *w_bw, *w_sf, *w_cr, *w_pre, *w_apply;
-static lv_obj_t *w_cross, *w_cross_help, *w_reply, *w_force, *w_reply_note;
+static lv_obj_t *w_reply, *w_force, *w_reply_note;
 static lv_obj_t *w_temp, *w_temp_val;
 static lv_obj_t *w_rx, *w_tx, *w_share, *w_sw, *w_pre_val, *w_sws, *w_warn, *w_warn_l, *w_updated;
 
@@ -348,11 +348,7 @@ static void render() {
     if (s->busy || s->supported != 1) lv_obj_add_state(w_apply, LV_STATE_DISABLED);
     else lv_obj_clear_state(w_apply, LV_STATE_DISABLED);
   }
-  // Bridging and replies.
-  setChoicePick(w_cross, s->cross == 1 ? 0 : s->cross == 0 ? 1 : s->cross == 2 ? 2 : -1, s->supported == 1);
-  setText(w_cross_help, s->cross == 1 ? TR("Forwards what it hears on either radio onto the other.")
-                      : s->cross == 2 ? TR("Each radio forwards only its own traffic.")
-                      : s->cross == 0 ? TR("Bridges the saved radio2; a temporary radio2 stays separate.") : "");
+  // Replies.
   setChoicePick(w_reply, s->reply >= 0 && s->reply <= 3 ? s->reply : -1, s->supported == 1);
   if (w_force) {
     if (s->reply_force) lv_obj_add_state(w_force, LV_STATE_CHECKED);
@@ -427,6 +423,10 @@ static void applyNow() {
   char pb[12] = "";
   if (pre) snprintf(pb, sizeof pb, ",%d", pre);
   push(K_SET, "set radio2 %.3f,%g,%d,%d,%s%s", f, bw, sf, cr, modeName(s->edit_mode), pb);
+  // radio2 traffic never crosses onto the main mesh, nor main-mesh traffic onto
+  // radio2: there's no bridging choice, and "auto" (the firmware's default)
+  // bridges a saved radio2.
+  if (s->cross != 2) push(K_SET, "set radio2.cross off");
   readAll();
 }
 
@@ -437,15 +437,6 @@ static void applyCb(lv_event_t* e) {
                   ? TR("Turn radio2 off on the repeater?")
                   : TR("Change radio2 on the repeater? It answers first, then switches. If you reach it over radio2 you may lose contact."),
               s->edit_mode == 0 ? TR("Turn off") : TR("Apply"), applyNow);
-}
-
-static void crossCb(lv_event_t* e) {
-  if (lv_event_get_code(e) != LV_EVENT_CLICKED || !s) return;
-  static const char* const v[3] = { "on", "auto", "off" };
-  const int i = setChoiceIndex(e);
-  if (i < 0 || i > 2) return;
-  push(K_SET, "set radio2.cross %s", v[i]);
-  push(K_CROSS, "get radio2.cross");
 }
 
 static void replyCb(lv_event_t* e) {
@@ -497,7 +488,7 @@ void closePage() {
   root = nullptr;
   w_line = w_main_f = w_main_d = w_r2_f = w_r2_d = w_r2_box = w_link = w_link_t = nullptr;
   w_mode = w_freq = w_bw = w_sf = w_cr = w_pre = w_apply = nullptr;
-  w_cross = w_cross_help = w_reply = w_force = w_reply_note = nullptr;
+  w_reply = w_force = w_reply_note = nullptr;
   w_temp = w_temp_val = nullptr;
   w_rx = w_tx = w_share = w_sw = w_pre_val = w_sws = w_warn = w_warn_l = w_updated = nullptr;
   if (s) { s->qn = 0; s->busy = false; }
@@ -600,13 +591,8 @@ static void build(lv_obj_t* page) {
     w_apply = setButton(c, UI_ICON_SEND_HORIZONTAL, "Apply to repeater", applyCb, nullptr, SET_PRIMARY);
   }
 
-  // Bridging between the radios, and where the repeater's own replies go.
-  {
-    lv_obj_t* c = setCard("Bridging");
-    const char* opts[3] = { TR("Both ways"), TR("Auto"), TR("Separate") };
-    w_cross = setChoiceRow(c, nullptr, nullptr, opts, 3, -1, crossCb);
-    w_cross_help = setNote(c, "");
-  }
+  // Where the repeater's own replies go. (No bridging choice: radio2 is
+  // always kept separate from the main mesh, applyNow.)
   {
     lv_obj_t* c = setCard("Replies to admins");
     const char* opts[4] = { TR("Both"), TR("Main"), TR("radio2"), TR("Auto") };
