@@ -186,6 +186,23 @@ An answer with radio2 off clears the mark. Answers are kept 30 days, in
 The ask is zero-hop, so only repeaters in direct range can answer. A repeater
 further out is marked once it has been in direct range.
 
+## Spectrum app
+
+The Spectrum app can show radio2 as well as the mesh channel. Tap the gear at
+the bottom right of the waterfall and turn on **Show MediaMesh** (saved, off by
+default). While radio2 is on (`tempradio2` included):
+
+- **Band** draws a fuchsia marker labelled *MediaMesh* at radio2's frequency
+  (911.150 MHz by default), when it falls in the 24 MHz sweep. That is the case
+  for any US main channel, since the sweep is centred on it.
+- The view button goes **Band → Channel → MediaMesh**. *MediaMesh* zooms on
+  radio2 the way *Channel* zooms on the mesh channel: 16 channel widths around
+  it, at most 4 MHz. The Channel and Busy tiles then measure radio2's channel.
+
+The sweep runs on the main radio chip, which tunes 150–960 MHz, so the
+MediaMesh view works whatever the main channel is. The T-Deck Pro's e-paper
+Spectrum layout doesn't have it.
+
 ## Repeaters
 
 A repeater running MeshCore with radio profiles
