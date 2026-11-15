@@ -287,7 +287,8 @@ inline size_t encode(const Position& x, uint8_t* out, size_t cap) {
 
 inline bool parse(const uint8_t* p, size_t n, Position& x) {
   R r(p, n);
-  if (!r.has(25) || r.u8() != kPosition) return false;
+  // 23: every fixed field and an empty callsign (25 dropped short callsigns)
+  if (!r.has(23) || r.u8() != kPosition) return false;
   memcpy(x.key4, p + 1, 4);
   r.o = 5;
   const uint32_t flags = r.u8();

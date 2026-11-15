@@ -148,6 +148,12 @@ static void golden() {
     CHECK(pn2 == pn && memcmp(pb, pb2, pn) != 0);
     v = unhex(kP2);
     CHECK(TeamWire::parse(v.data(), v.size(), q) && !q.has_seq);
+    // A one-letter callsign is 24 bytes: still a position.
+    TeamWire::Position p1c;
+    key(p1c.key4, 0x01020304);
+    snprintf(p1c.callsign, sizeof p1c.callsign, "J");
+    const size_t n1 = TeamWire::encode(p1c, pb, sizeof pb);
+    CHECK(n1 == 24 && TeamWire::parse(pb, n1, q) && !strcmp(q.callsign, "J"));
 
     TeamWire::Alert a3;
     key(a3.key4, 0xAABBCCDD);
