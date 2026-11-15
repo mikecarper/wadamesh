@@ -97,17 +97,17 @@ static void testRepeat() {
   res = handleCli("set radio2.repeat off", r, e, out, sizeof out);
   assert(res.save && r.saved.relay == 0);
 
-  // Saved in the blob (v7); a v6 blob (22 bytes) still reads, a v5 one as off.
+  // Saved in the blob (v8); a v6 blob (22 bytes) still reads, a v5 one as off.
   Config c;
   defaults(c);
   c.mode = MODE_RXTX;
   c.p = P(k24Freq, k24Bw, 7, 5);
   c.relay = 1;
   uint8_t b[kBlobSize];
-  assert(encode(c, b) == kBlobSize && b[2] == 7);
+  assert(encode(c, b) == kBlobSize && b[2] == kBlobVersion);
   Config d;
   assert(decode(b, sizeof b, d) && d.relay == 1 && is24GHz(d.p.freq));
-  assert(!decode(b, kBlobSizeV6, d));   // v7 cut short
+  assert(!decode(b, kBlobSizeV6, d));   // v8 cut short
   b[2] = 6;
   assert(decode(b, kBlobSizeV6, d) && d.relay == 1 && d.held_p.freq == 0);
   assert(!decode(b, kBlobSizeV5, d));   // v6 cut short

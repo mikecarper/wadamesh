@@ -18816,11 +18816,11 @@ static lv_timer_t* s_mm_timer = nullptr;
 // shows as On, and tapping On makes it send too.
 static int mmModeIndex(const mediamesh::Config& c) { return c.mode == mediamesh::MODE_OFF ? 0 : 1; }
 // "Photos & voice": media on radio2, nothing else crosses (the MediaMesh setup).
-// "Everything": all traffic on both. Anything else set from the terminal: Custom.
+// Anything else set from the terminal: Custom. There's no "everything on both"
+// choice: radio2 and the main mesh are kept separate (radio2.cross off).
 static int mmUseIndex(const mediamesh::Config& c) {
   if (c.media == mediamesh::TX_RADIO2 && c.cross == mediamesh::CROSS_OFF) return 0;
-  if (c.media == mediamesh::TX_AUTO && c.cross == mediamesh::CROSS_ON) return 1;
-  return 2;
+  return 1;
 }
 
 static void mediaMeshRefreshChoices() {
@@ -18863,10 +18863,10 @@ static void mmModeCb(lv_event_t* e) {
   mediamesh::Config c = mediamesh::config();
   const bool was_off = c.mode == mediamesh::MODE_OFF;
   c.mode = i == 1 ? mediamesh::MODE_RXTX : mediamesh::MODE_OFF;
-  if (was_off && c.mode != mediamesh::MODE_OFF && c.media == mediamesh::TX_AUTO && c.cross == mediamesh::CROSS_AUTO) {
+  if (was_off && c.mode != mediamesh::MODE_OFF && c.media == mediamesh::TX_AUTO) {
     c.media = mediamesh::TX_RADIO2;   // never set up: start as MediaMesh (photos and voice)
-    c.cross = mediamesh::CROSS_OFF;
   }
+  if (c.mode != mediamesh::MODE_OFF) c.cross = mediamesh::CROSS_OFF;   // never bridged
   mediamesh::set(c);
   mediaMeshRefreshChoices();
   mediaMeshInfoRefresh();
@@ -18928,16 +18928,15 @@ static void mmUseCb(lv_event_t* e) {
   const int i = setChoiceIndex(e);
   mediamesh::Config c = mediamesh::config();
   if (i == 0) { c.media = mediamesh::TX_RADIO2; c.cross = mediamesh::CROSS_OFF; }
-  else if (i == 1) { c.media = mediamesh::TX_AUTO; c.cross = mediamesh::CROSS_ON; }
   else {
-    if (g_lv.task) g_lv.task->showAlert(TR("Custom: use tx.media and radio2.cross in the Terminal"), 2200);
+    if (g_lv.task) g_lv.task->showAlert(TR("Custom: use tx.media in the Terminal"), 2200);
     mediaMeshRefreshChoices();
     return;
   }
   mediamesh::set(c);
   mediaMeshRefreshChoices();
   if (g_lv.task) {
-    g_lv.task->showAlert(i == 0 ? TR("Photos and voice on radio2") : TR("Everything on both frequencies"), 1400);
+    g_lv.task->showAlert(TR("Photos and voice on radio2"), 1400);
   }
 }
 
@@ -19024,11 +19023,9 @@ static void mmFindApply(float freq, float bw, uint8_t sf, uint8_t cr, const char
   c.p.freq = freq;
   if (c.mode == mediamesh::MODE_OFF && !(np && np->client_repeat)) {
     c.mode = mediamesh::MODE_RXTX;
-    if (c.media == mediamesh::TX_AUTO && c.cross == mediamesh::CROSS_AUTO) {
-      c.media = mediamesh::TX_RADIO2;
-      c.cross = mediamesh::CROSS_OFF;
-    }
+    if (c.media == mediamesh::TX_AUTO) c.media = mediamesh::TX_RADIO2;
   }
+  if (c.mode != mediamesh::MODE_OFF) c.cross = mediamesh::CROSS_OFF;   // never bridged
   if (!mediamesh::set(c)) {
     if (g_lv.task) g_lv.task->showAlert(TR("The radio refused that profile"), 1800);
     return;
@@ -19326,11 +19323,11 @@ static void buildMediaMeshRadioCards() {
                                  opts, 2, mmModeIndex(cfg), mmModeCb);
   }
   {
-    const char* opts[3] = { TR("Photos & voice"), TR("Everything"), TR("Custom") };
+    const char* opts[2] = { TR("Photos & voice"), TR("Custom") };
     s_mm_use_row = setChoiceRow(c, "Sent on radio2",
-                                "Photos & voice: Open TAK photos and voice clips, text stays on the main mesh. Everything: "
-                                "every message goes out on both. Per contact or channel: their Radio setting.",
-                                opts, 3, mmUseIndex(cfg), mmUseCb);
+                                "Photos & voice: Open TAK photos and voice clips, text stays on the main mesh. "
+                                "Per contact or channel: their Radio setting.",
+                                opts, 2, mmUseIndex(cfg), mmUseCb);
     setChoicePick(s_mm_use_row, mmUseIndex(cfg), cfg.mode != mediamesh::MODE_OFF);
   }
   s_mm_share_row = nullptr;

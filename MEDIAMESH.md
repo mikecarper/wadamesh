@@ -23,9 +23,10 @@ The **radio2 (MediaMesh)** card:
   is still available from the Terminal (`set radio2 ...,rx`); it shows as On,
   and tapping On makes it send too. Turning it on from untouched settings also
   picks Photos & voice below.
-- **Sent on radio2**: *Photos & voice* (`tx.media radio2`, `radio2.cross off`) or
-  *Everything* (`tx.media auto`, `radio2.cross on`). Any other mix shows *Custom*;
-  set that in the Terminal.
+- **Sent on radio2**: *Photos & voice* (`tx.media radio2`, `radio2.cross off`).
+  Any other mix shows *Custom*; set `tx.media` in the Terminal. Turning radio2
+  on or applying a preset always sets `radio2.cross off`: the two meshes are
+  never bridged from the settings pages.
 - **Preset**: *250 kHz fast* (the default) or *125 kHz range*. Picking one
   fills in bandwidth, SF7 and CR 4/5 and leaves the frequency alone; it shows
   as picked whenever the fields match one.
@@ -102,10 +103,15 @@ Everything else (schedules, `tempradio`, diagnostics) works from
 A radio that has never saved MediaMesh settings starts with radio2 **on**
 (send and listen) when its main radio is in the US 902-928 MHz band, and off
 elsewhere, since the default frequency below is a US one. Turning it off is
-remembered. **Sent on radio2** starts as *Photos & voice*. A radio that was
-still on the old automatic pair (`tx.media auto`, `radio2.cross auto`, shown
-as *Custom*) moves to *Photos & voice* once (NVS key `mm_pv_def`); choosing
-that pair again from the Terminal afterwards is kept.
+remembered. **Sent on radio2** starts as *Photos & voice*. A radio whose
+`tx.media` was never chosen (still `auto`, shown as *Custom*) moves to
+*Photos & voice* once (NVS key `mm_pv_def`); choosing `auto` again from the
+Terminal afterwards is kept.
+
+Bridging (`radio2.cross`) is **off** by default. A radio updated from firmware
+that saved its MediaMesh settings in an older format (blob v7 or earlier)
+turns bridging off once, saved and held alike, whatever it was; `set
+radio2.cross on|auto` from the Terminal afterwards is kept.
 
 Default settings: 911.150 MHz, 250 kHz, SF7, CR 4/5 (the *250 kHz fast* preset).
 That is about 4× faster than SF7/62.5 for roughly 6 dB less range. Where that
@@ -196,7 +202,8 @@ antenna button in the console's header for its **MediaMesh** page:
   and an optional preamble (empty = the repeater picks it), applied with **Apply
   to repeater** after a confirm. The repeater answers first and switches after,
   so if you reach it over radio2 you may lose contact until your radio follows.
-- **Bridging** (`radio2.cross`): Both ways (`on`), Auto, or Separate (`off`).
+- Bridging isn't offered: **Apply to repeater** sets `radio2.cross off`
+  whenever radio2 is on.
 - **Replies to admins** (`tx.reply`): Both (the default), Main, radio2 or Auto;
   *Also on a listen-only radio2* adds `force`.
 - **Temporary radio2** (`set tempradio2 ...,minutes`) for 15 min to 6 h, or Stop.
@@ -271,7 +278,7 @@ get tx.channel | get tx.channel 0 | set tx.channel #wardriving both
 `radio2.cross` decides what `auto` traffic does, and what a forwarded packet does
 (it keeps to the profile it arrived on unless crossing is allowed):
 
-| Main | Second | `auto` (default) | `on` | `off` |
+| Main | Second | `auto` | `on` | `off` (default) |
 | --- | --- | --- | --- | --- |
 | saved | saved | both | both | isolated |
 | `tempradio` | `tempradio2` | both | both | isolated |
