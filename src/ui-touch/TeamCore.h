@@ -21,7 +21,11 @@ constexpr int kMaxAlerts = 16;
 constexpr int kMaxMarkers = 64;
 constexpr int kMaxRoutes = 8;
 
-enum class Fresh : uint8_t { Live, Stale, Lost };   // < 12 min, < 30 min, older
+// < 25 min, < 1 h, older: a still teammate beacons every 10 minutes, so live
+// covers two of those going missing (the app uses the same, TEAM_PRESENCE.md).
+enum class Fresh : uint8_t { Live, Stale, Lost };
+constexpr uint32_t kLiveMs = 25UL * 60000UL;
+constexpr uint32_t kStaleMs = 60UL * 60000UL;
 
 struct Member {
   bool used = false;
@@ -219,6 +223,8 @@ class Core {
   HeardRec heard_by_[48] = {};
   uint32_t last_beacon_ms_ = 0;
   Fix last_fix_;
+  uint16_t seq_ = 0;               // the beacon number (random start, set in begin)
+  bool seq_set_ = false;
 
   bool own_active_ = false;
   TeamWire::Alert own_;
