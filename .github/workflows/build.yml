@@ -19,7 +19,11 @@ permissions:
 
 jobs:
   host-tests:
-    runs-on: ubuntu-latest
+    # Pinned: test_vox_voice checks Codec2 decodes sample-exact against the app's
+    # reference, and ubuntu-latest's move to 26.04 (newer gcc and libm) changes
+    # Codec2's float output, so the hash no longer matches. Move on once the
+    # reference is checked against 26.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
