@@ -280,7 +280,7 @@ footer .wrap{display:flex;flex-wrap:wrap;gap:6px 18px}
 
   <!-- ===== Spectra-Cascadia ===== -->
   <div id="pane-spectra" role="tabpanel" aria-labelledby="tab-spectra" hidden style="display:flex;flex-direction:column;gap:18px">
-    <p class="banner info"><span>Spectra-Cascadia is CascadiaMesh's MeshCore repeater firmware for the DX-LR30 (STM32F103 + SX1262), following the CascadiaMesh airtime policy. After flashing it runs on its own; change settings over USB serial with the usual MeshCore repeater commands.</span></p>
+    <p class="banner info"><span>Spectra-Cascadia is CascadiaMesh's MeshCore repeater firmware for the DX-LR30 (STM32F103 + SX1262), following the CascadiaMesh airtime policy. After flashing it runs on its own; change settings over USB serial with the usual MeshCore repeater commands. <b>Only the first install needs the ST-Link</b> (or the BOOT0 and RESET buttons); after that, XL nodes update over their USB-C port from this page.</span></p>
     <section class="step" aria-labelledby="s1">
       <header><span class="num">1</span><div><h2 id="s1">Pick the build</h2><p class="sub">Both builds are for the DX-LR30 module.</p></div></header>
       <div class="boards" id="sBuild" role="radiogroup" aria-labelledby="s1"></div>
@@ -291,6 +291,14 @@ footer .wrap{display:flex;flex-wrap:wrap;gap:6px 18px}
           <button type="button" data-region="eu" aria-pressed="false">EU (868 MHz band)</button>
         </div>
         <p class="oh">Sets the first-boot radio defaults. A node you upgrade keeps its saved radio settings.</p>
+      </div>
+      <div class="opt">
+        <span class="ol" id="sEntryL">Install</span>
+        <div class="seg" id="sEntry" role="group" aria-labelledby="sEntryL">
+          <button type="button" data-entry="usb" aria-pressed="true">Update over USB</button>
+          <button type="button" data-entry="boot0" aria-pressed="false">First install (BOOT0 button)</button>
+        </div>
+        <p class="oh" id="sEntryHelp"></p>
       </div>
     </section>
     <section class="step" aria-labelledby="s2">
@@ -737,10 +745,13 @@ const Cascade = (() => {
 const Spectra = (() => {
   const BUILDS = [
     { id: "std", name: "Standard", size: "64 KB", desc: "Every DX-LR30. Relays traffic; set it up over USB serial." },
-    { id: "xl", name: "XL", size: "128 KB", desc: "Adds app login, status, telemetry, neighbours and remote settings. Only for boards that pass tools/flash128_test." },
+    { id: "xl", name: "XL", size: "128 KB", desc: "Adds app login, status, telemetry, neighbours, remote settings, MediaMesh relay and updates over USB. Only for boards that pass tools/flash128_test." },
   ];
   let build = store.get("mm.s.build") === "xl" ? "xl" : "std";
   let region = store.get("mm.s.region") === "eu" ? "eu" : "us";
+  let entry = store.get("mm.s.entry") === "boot0" ? "boot0" : "usb";
+  // The Standard build has no `bootloader` command: it always installs with BOOT0.
+  const entryNow = () => build === "xl" ? entry : "boot0";
   let releases = [], rel = null, loaded = false, loading = null;
   const assetName = r => `spectra-cascadia-${r.tag_name}-${build === "xl" ? "xl-" : ""}${region}.${build === "xl" ? "hex" : "bin"}`;
 
@@ -753,7 +764,17 @@ const Spectra = (() => {
       box.append(el);
     }
     for (const b of $("sRegion").children) b.setAttribute("aria-pressed", String(b.dataset.region === region));
+    for (const b of $("sEntry").children) {
+      b.setAttribute("aria-pressed", String(b.dataset.entry === entryNow()));
+      b.disabled = b.dataset.entry === "usb" && build !== "xl";
+    }
+    $("sEntryHelp").textContent = build !== "xl"
+      ? "The Standard build can't update over USB: every install uses the BOOT0 and RESET buttons (or an ST-Link)."
+      : entryNow() === "usb"
+        ? "For an XL node already running v1.18.0.2.1 or v1.18.0.6 or later: the page restarts it into its bootloader through the USB-C port. No buttons, no ST-Link."
+        : "The first install, a node on older firmware, or one that won't start: the page talks to the bootloader you start with the BOOT0 and RESET buttons. An ST-Link with STM32CubeProgrammer works too.";
   }
+  $("sEntry").onclick = e => { const b = e.target.closest("button"); if (!b || b.disabled) return; entry = b.dataset.entry; store.set("mm.s.entry", entry); render(); if (S.tab === "spectra") refreshTarget(); };
   $("sRegion").onclick = e => { const b = e.target.closest("button"); if (!b) return; region = b.dataset.region; store.set("mm.s.region", region); render(); if (S.tab === "spectra") refreshTarget(); };
   render();
 
@@ -793,7 +814,7 @@ const Spectra = (() => {
     if (!loaded) return { kind: "none", msg: "Loading the Spectra-Cascadia releases…" };
     if (!rel) return { kind: "none", msg: `The release list didn't load. Download the file from the release page and flash it with STM32CubeProgrammer, or reload this page.` };
     $("sRelLink").href = rel.html_url || `https://github.com/${CONFIG.spectra.repo}/releases`;
-    const first = (rel.body || "").split(/\n\s*\n/)[0] || "";
+    const first = ((rel.body || "").replace(/^\s*#+.*$/gm, "").trim().split(/\n\s*\n/)[0] || "").replace(/^\s*-\s+/gm, "");
     $("sNotes").innerHTML = esc(first).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
     const name = assetName(rel); const a = (rel.assets || []).find(x => x.name === name);
     if (!a) return { kind: "none", msg: `${rel.tag_name} has no ${name}. Pick another release or build.` };
@@ -802,10 +823,12 @@ const Spectra = (() => {
     if (proxied(a.browser_download_url)) urls.push(proxied(a.browser_download_url));
     return {
       kind: "stm32", name, link: a.browser_download_url, urls: [...new Set(urls.filter(Boolean))], size: a.size,
-      digest: a.digest?.replace(/^sha256:/, "") || null, xl: build === "xl",
+      digest: a.digest?.replace(/^sha256:/, "") || null, xl: build === "xl", entry: entryNow(), version: rel.tag_name,
       untested: /not (yet )?been tested on hardware/i.test(rel.body || ""),
       label: `Spectra-Cascadia ${rel.tag_name} ${build === "xl" ? "XL" : "Standard"} (${region.toUpperCase()}) for the DX-LR30`,
-      boot: "Put the DX-LR30 in bootloader mode before pressing Install: hold BOOT0, press and release RESET, then release BOOT0. The LED stays on while the bootloader waits.",
+      boot: entryNow() === "usb"
+        ? "Plug the node in by its USB-C port and close any serial console using it. Press Install and pick its port (USB-SERIAL CH340): the page sends the bootloader command, flashes, and checks the new version. Your settings are kept."
+        : "Put the DX-LR30 in bootloader mode before pressing Install: hold BOOT0, press and release RESET, then release BOOT0. The LED stays on while the bootloader waits.",
       wrongName: n => /^spectra-cascadia-.+\.(bin|hex)$/.test(n) && n !== name ? n : null,
     };
   }
@@ -816,7 +839,7 @@ const Spectra = (() => {
    Flash 0x08000000..0x0801FFFF in 1 KB pages. 0x0800F800..0x0800FFFF holds the
    node's settings and clock journal, so it is never erased or written; only the
    pages the image covers are erased, which keeps identity, name and passwords. */
-const STM = { BASE: 0x08000000, END: 0x08020000, KEEP_LO: 0x0800F800, KEEP_HI: 0x08010000, HI: 0x08010000 };
+const STM = { BASE: 0x08000000, END: 0x08020000, KEEP_LO: 0x0800F800, KEEP_HI: 0x08010000, HI: 0x08010000, ADMIN: 0x0801FC00 };
 function parseStm32(bytes, isHex) {
   const segs = [];
   if (isHex) {
@@ -840,6 +863,7 @@ function parseStm32(bytes, isHex) {
   for (const s of segs) for (let i = 0; i < s.data.length; i++) {
     const a = s.addr + i;
     if (a < STM.BASE || a >= STM.END) return { err: `That image writes outside the DX-LR30's flash (at 0x${a.toString(16)}).` };
+    if (a >= STM.ADMIN) return { err: "That image would overwrite the admin list page (0x0801FC00–0x0801FFFF)." };
     if (a >= STM.KEEP_LO && a < STM.KEEP_HI) return { err: isHex ? "That image would overwrite the settings pages (0x0800F800–0x0800FFFF)." : "That .bin is too big for the standard build: it would overwrite the settings pages. XL images must be flashed from the .hex." };
     const ba = a - (a % 256); let blk = blocks.get(ba);
     if (!blk) { blk = new Uint8Array(256).fill(0xFF); blocks.set(ba, blk); }
@@ -856,8 +880,9 @@ function parseStm32(bytes, isHex) {
 
 class Stm32Uart {
   constructor(port) { this.port = port; this.buf = []; this.wake = null; }
-  async open() {
-    await this.port.open({ baudRate: 57600, dataBits: 8, parity: "even", stopBits: 1, bufferSize: 4096 });
+  async open(baudRate = 57600, parity = "even") {
+    this.buf.length = 0;
+    await this.port.open({ baudRate, dataBits: 8, parity, stopBits: 1, bufferSize: 4096 });
     this.writer = this.port.writable.getWriter(); this.reader = this.port.readable.getReader();
     this.loop = (async () => { try { for (;;) { const { value, done } = await this.reader.read(); if (done) break; for (const b of value) this.buf.push(b); this.wake?.(); } } catch {} })();
   }
@@ -867,6 +892,9 @@ class Stm32Uart {
     try { await this.port.close(); } catch {}
   }
   write(b) { return this.writer.write(Uint8Array.from(b)); }
+  // The Spectra-Cascadia console (115200 8N1): what came in over [ms].
+  async text(ms) { await sleep(ms); return new TextDecoder().decode(Uint8Array.from(this.buf.splice(0))); }
+  async say(line) { await this.write(new TextEncoder().encode(line + "\r")); }
   async read(n, ms = 2000) {
     const end = Date.now() + ms;
     while (this.buf.length < n) {
@@ -884,7 +912,9 @@ class Stm32Uart {
       this.buf.length = 0; await this.write([0x7F]);
       try { const [b] = await this.read(1, 500); if (b === 0x79 || b === 0x1F) return; } catch {}
     }
-    throw new Error("No answer from the DX-LR30 bootloader. Hold BOOT0, press and release RESET, release BOOT0, then press Install again.");
+    throw new Error(this.viaUsb
+      ? "No answer from the DX-LR30 bootloader. Unplug and replug the node, then try again; if it still fails, choose First install (BOOT0 button)."
+      : "No answer from the DX-LR30 bootloader. Hold BOOT0, press and release RESET, release BOOT0, then press Install again.");
   }
   async get() { await this.cmd(0x00); const [n] = await this.read(1); const d = await this.read(n + 1); await this.ack(); return { version: d[0], cmds: d.slice(1) }; }
   async getId() { await this.cmd(0x02); const [n] = await this.read(1); const d = await this.read(n + 1); await this.ack(); return d.reduce((x, y) => x * 256 + y, 0); }
@@ -902,15 +932,33 @@ class Stm32Uart {
 async function installStm32(t) {
   await stopMonitor(); setBusy(true); result(); let link;
   try {
-    if (t.xl && !$("xlOk").checked) throw new Error("Confirm that this board passed tools/flash128_test before flashing XL.");
+    const usb = t.entry === "usb";
+    // A node that answers `bootloader` already runs XL, so it has the upper 64 KB.
+    if (t.xl && !usb && !$("xlOk").checked) throw new Error("Confirm that this board passed tools/flash128_test before flashing XL.");
     const port = await pickPort();
     const data = await getFirmware(t);
     const img = parseStm32(data, /\.hex$/i.test(S.local?.name || t.name)); if (img.err) throw new Error(img.err);
     if (img.hi && !t.xl) throw new Error("That is an XL image. Pick the XL build in step 1.");
     if (!img.hi && t.xl) throw new Error("That image doesn't use the upper 64 KB, so it isn't an XL build.");
-    setPhase("Connecting to the bootloader", 0, ""); log("Connecting at 57600 baud, 8E1…", "d");
-    link = new Stm32Uart(port);
-    try { await link.open(); } catch (e) { S.port = null; throw new Error(`Couldn't open the port (${e.message}). Close other programs using it and try again.`); }
+    link = new Stm32Uart(port); link.viaUsb = usb;
+    const openOr = async (baud, parity) => {
+      try { await link.open(baud, parity); }
+      catch (e) { S.port = null; throw new Error(`Couldn't open the port (${e.message}). Close other programs using it (a serial console tab, CubeProgrammer) and try again.`); }
+    };
+    const showNode = txt => txt.split(/\r?\n/).map(l => l.trim()).filter(Boolean).forEach(l => log("  node: " + l, "d"));
+    if (usb) {
+      setPhase("Starting the node's bootloader", 0, "");
+      await openOr(115200, "none");
+      await link.say(""); await sleep(200); link.buf.length = 0;
+      await link.say("bootloader");
+      const reply = await link.text(1500); showNode(reply);
+      await link.close(); await sleep(300);
+      if (/unknown command/i.test(reply)) throw new Error("This node's firmware has no bootloader command (it is older than v1.18.0.2.1 / v1.18.0.6, or the Standard build). Install this once with First install (BOOT0 button) or an ST-Link; later updates can use USB.");
+      if (/only over usb|usb only/i.test(reply)) throw new Error("The node refused the bootloader command. Connect to its USB-C port directly.");
+      if (!/bootloader/i.test(reply)) log("No reply to `bootloader`; trying the bootloader anyway.", "d");
+    }
+    setPhase("Connecting to the bootloader", 0, ""); log(`Connecting at ${usb ? 115200 : 57600} baud, 8E1…`, "d");
+    await openOr(usb ? 115200 : 57600, "even");
     await link.sync();
     const info = await link.get(); const pid = await link.getId();
     log(`Bootloader v${info.version >> 4}.${info.version & 15}, chip ID 0x${pid.toString(16).padStart(3, "0")}`, "o");
@@ -939,7 +987,20 @@ async function installStm32(t) {
     log(`Wrote and verified ${(img.bytes / 1024).toFixed(1)} KB in ${img.blocks.length} blocks.`, "o");
     await link.go(STM.BASE);
     setPhase("Installed", 1, "100%"); log("Done. The DX-LR30 is starting.", "o");
-    result("ok", `<b>${esc(t.label)} is installed.</b> Press RESET if it doesn't start. Use “Watch serial log” for the boot banner, or send <code>ver</code> from a serial terminal at 115200 baud.`);
+    // Check what came up: the boot banner, then `ver`.
+    let seen = null;
+    try {
+      await link.close(); await sleep(300);
+      await link.open(115200, "none");
+      const banner = await link.text(3000); showNode(banner);
+      await link.say("ver");
+      const ver = await link.text(800); showNode(ver);
+      seen = (banner + ver).match(/Spectra-Cascadia (?:MeshCore Repeater )?(v[0-9][0-9A-Za-z.\-]*)/)?.[1] || null;
+    } catch (e) { log(`Couldn't read the node after flashing (${e.message}).`, "d"); }
+    const more = usb ? "" : " From now on this node updates over USB: choose Update over USB next time.";
+    if (seen && seen === t.version) result("ok", `<b>${esc(t.label)} is installed.</b> The node reports ${esc(seen)}; its settings were kept.${t.xl ? more : ""}`);
+    else if (seen) result("ok", `<b>Flashed and verified.</b> The node reports ${esc(seen)} (the release is ${esc(t.version || "?")}).`);
+    else result("ok", `<b>${esc(t.label)} is installed.</b> Press RESET if it doesn't start. Use “Watch serial log” for the boot banner, or send <code>ver</code> from a serial terminal at 115200 baud.`);
   } catch (e) {
     const m = String(e?.message || e); log(m, "e"); result("bad", esc(m)); $("phase").textContent = "Stopped";
   } finally { await link?.close(); setBusy(false); }
@@ -980,7 +1041,7 @@ function renderInstall() {
     $("iSub").textContent = t.label + ".";
     $("iFile").innerHTML = `File <code>${esc(t.name)}</code>${t.size ? ` <span>${(t.size / 1024).toFixed(0)} KB</span>` : ""} <span>${t.xl ? "written to 0x08000000 and 0x08010000" : "written from 0x08000000"}; the settings pages are left alone, so name, identity and passwords are kept</span>`;
     $("bootTip").textContent = t.boot; $("eraseRow").hidden = true; $("eraseAll").checked = false;
-    $("xlRow").hidden = !t.xl; $("xlOk").checked = false;
+    $("xlRow").hidden = !t.xl || t.entry === "usb"; $("xlOk").checked = false;
     let st = ready();
     if (t.untested) st += `<p class="banner warn" style="margin-top:10px"><span><b>Not yet tested on hardware.</b> The release notes say this build was ported automatically. Try it on a bench node before upgrading a repeater on a roof.</span></p>`;
     $("iStatus").innerHTML = st; showDrop(!t.urls.length);

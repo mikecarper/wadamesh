@@ -18,6 +18,12 @@ BOOT0 + RESET): only the pages the image covers are erased, so the settings page
 0x0800F800-0x0800FFFF (name, identity, passwords) survive, and every block is read back and
 compared before the node is started. XL asks for confirmation that the board passed
 `tools/flash128_test`, and stops with a clear message if the chip refuses the upper 64 KB.
+Only the first install needs the ST-Link (or BOOT0 + RESET). After that, an XL node running
+v1.18.0.2.1 or v1.18.0.6 or later updates over its USB-C port: **Update over USB** (the default for XL)
+types `bootloader` on the console (115200 8N1), which restarts the node into the ROM bootloader,
+then flashes at 115200 8E1 and reads the new version back with `ver`. The admin list page
+(0x0801FC00-0x0801FFFF) is protected too. The Standard build has no `bootloader` command, so it
+always installs with BOOT0.
 
 ## Files
 - `flasher/index.html` - the page. Settings are in `CONFIG` at the top of the script.
