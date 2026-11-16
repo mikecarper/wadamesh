@@ -234,6 +234,8 @@ jobs:
         run: g++ -std=c++17 -Wall -Wextra -fsanitize=address,undefined -I src test/test_team_compat.cpp src/ui-touch/TeamCore.cpp -o /tmp/team_compat && /tmp/team_compat
       - name: One-scan team setup (host test, golden strings shared with Open TAK)
         run: g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src test/test_team_setup.cpp -o /tmp/team_setup && /tmp/team_setup
+      - name: Name colours (the official MeshCore app's hue)
+        run: g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src test/test_name_hue.cpp -o /tmp/name_hue && /tmp/name_hue
       - name: Watched channels on the map (host test)
         run: g++ -std=c++17 -Wall -I src test/test_watch_feed.cpp -o /tmp/watch_test && /tmp/watch_test
       - name: Transit cards on watched channels (host test, samples shared with Open TAK)
