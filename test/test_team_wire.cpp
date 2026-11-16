@@ -41,6 +41,11 @@ static const char* kA1 =
     "53aabbccddbeef131c4fecc0b72221600c05427261766f174e65656420776174657220617420746865207269646765";
 static const char* kA2 =
     "53aabbccdd0001000000000000000000000000";
+// The beacon number (flag 0x80) and an alert repeat's nonce (flag 0x04).
+static const char* kP4 =
+    "500102030498ebd0073b5a20b51b0000000000ff8b0507416c7068612d311234";
+static const char* kA3 =
+    "53aabbccdd000104000000000000000000000007";
 static const char* kM1 =
     "4d0a0b0c0d1234567800041bed17f8b76cda4868eb2c5008526f636b66616c6c1d547261696c20626c6f636b65642070617374207468652062726964676500";
 static const char* kM2 =
@@ -120,6 +125,49 @@ static void golden() {
   v = unhex(kA1);
   CHECK(TeamWire::parse(v.data(), v.size(), b));
   CHECK(b.id == 0xBEEF && b.active && b.type == 1 && b.has_pos && !strcmp(b.note, "Need water at the ridge"));
+  // A beacon number and an alert repeat's nonce: written as the app writes
+  // them, read back, and skipped by a reader that doesn't know them.
+  {
+    TeamWire::Position p4;
+    key(p4.key4, 0x01020304);
+    p4.lat = -33.8688197; p4.lon = 151.2092955;
+    p4.role = 8; p4.color = 11; p4.status = 5;
+    p4.sos = true; p4.relayed = true;
+    snprintf(p4.callsign, sizeof p4.callsign, "  Alpha-1  ");
+    p4.has_seq = true; p4.seq = 0x1234;
+    uint8_t pb[TeamWire::kMaxPayload];
+    size_t pn = TeamWire::encode(p4, pb, sizeof pb);
+    printf("P4 %s\n", hex(pb, pn).c_str());
+    CHECK(hex(pb, pn) == kP4);
+    v = unhex(kP4);
+    CHECK(TeamWire::parse(v.data(), v.size(), q));
+    CHECK(q.has_seq && q.seq == 0x1234 && !strcmp(q.callsign, "Alpha-1") && q.sos);
+    p4.seq = 0x1235;   // next beacon, same place: new bytes
+    uint8_t pb2[TeamWire::kMaxPayload];
+    const size_t pn2 = TeamWire::encode(p4, pb2, sizeof pb2);
+    CHECK(pn2 == pn && memcmp(pb, pb2, pn) != 0);
+    v = unhex(kP2);
+    CHECK(TeamWire::parse(v.data(), v.size(), q) && !q.has_seq);
+    // A one-letter callsign is 24 bytes: still a position.
+    TeamWire::Position p1c;
+    key(p1c.key4, 0x01020304);
+    snprintf(p1c.callsign, sizeof p1c.callsign, "J");
+    const size_t n1 = TeamWire::encode(p1c, pb, sizeof pb);
+    CHECK(n1 == 24 && TeamWire::parse(pb, n1, q) && !strcmp(q.callsign, "J"));
+
+    TeamWire::Alert a3;
+    key(a3.key4, 0xAABBCCDD);
+    a3.id = 1;
+    a3.has_nonce = true; a3.nonce = 7;
+    pn = TeamWire::encode(a3, pb, sizeof pb);
+    printf("A3 %s\n", hex(pb, pn).c_str());
+    CHECK(hex(pb, pn) == kA3);
+    v = unhex(kA3);
+    TeamWire::Alert a3b;
+    CHECK(TeamWire::parse(v.data(), v.size(), a3b) && a3b.has_nonce && a3b.nonce == 7 && !a3b.active && a3b.id == 1);
+    v = unhex(kA2);
+    CHECK(TeamWire::parse(v.data(), v.size(), a3b) && !a3b.has_nonce);
+  }
   TeamWire::Marker mm;
   v = unhex(kM2);
   CHECK(TeamWire::parse(v.data(), v.size(), mm));

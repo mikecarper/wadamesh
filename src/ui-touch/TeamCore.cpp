@@ -343,6 +343,11 @@ bool Core::sendPosition() {
   p.heard_n = heard_recent_n_;
   for (uint8_t i = 0; i < heard_recent_n_; i++) p.heard[i] = heard_recent_[i];
 #endif
+  // A new beacon number each time, so a still radio's beacons aren't dropped
+  // as already seen (TeamWire.h).
+  if (!seq_set_) { seq_ = (uint16_t)io_->random32(); seq_set_ = true; }
+  p.has_seq = true;
+  p.seq = ++seq_;
   uint8_t buf[TeamWire::kMaxPayload];
   const size_t n = TeamWire::encode(p, buf, sizeof buf);
   if (!sendRaw(buf, n)) return false;
@@ -402,6 +407,8 @@ void Core::tick() {
   // Own alert: three sends (radio collisions happen), then it rides on every position.
   if (own_active_ && own_sends_ < 3 && (int32_t)(now - own_next_ms_) >= 0) {
     uint8_t buf[TeamWire::kMaxPayload];
+    own_.has_nonce = true;   // each repeat new bytes, or the mesh drops it as seen
+    own_.nonce = own_sends_;
     if (sendRaw(buf, TeamWire::encode(own_, buf, sizeof buf))) {
       own_sends_++;
       own_next_ms_ = now + (own_sends_ == 1 ? 15000 : 30000);
@@ -409,6 +416,8 @@ void Core::tick() {
   }
   if (cancel_sends_ < 2 && (int32_t)(now - cancel_next_ms_) >= 0) {
     uint8_t buf[TeamWire::kMaxPayload];
+    cancel_.has_nonce = true;
+    cancel_.nonce = cancel_sends_;
     if (sendRaw(buf, TeamWire::encode(cancel_, buf, sizeof buf))) {
       cancel_sends_++;
       cancel_next_ms_ = now + 10000;
@@ -528,7 +537,7 @@ void Core::onPosition(const TeamWire::Position& x) {
 
 Fresh Core::freshness(const Member& m) const {
   const uint32_t age = io_->nowMs() - m.heard_ms;
-  return age < 12UL * 60000UL ? Fresh::Live : age < 30UL * 60000UL ? Fresh::Stale : Fresh::Lost;
+  return age < kLiveMs ? Fresh::Live : age < kStaleMs ? Fresh::Stale : Fresh::Lost;
 }
 
 int Core::memberCount() const {

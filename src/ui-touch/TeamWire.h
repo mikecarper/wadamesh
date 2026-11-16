@@ -32,6 +32,13 @@
 // [nameHash u16 (the radio name's Dart string hash)][n u8 (0-4)][heard u16 x n
 // (reaction hashes of the last teammates' channel messages heard)].
 //
+// Position flag 0x80 adds, last, a beacon number [seq u16] that goes up with
+// every beacon: GRP_DATA has no timestamp and channel encryption is
+// deterministic, so without it a still member's beacons were the same bytes and
+// every radio dropped the repeats as already seen (MeshCore keeps the last 160).
+// An alert's flag 0x04 adds [nonce u8] after the note, for its repeats. Older
+// readers ignore both (TEAM_PRESENCE.md).
+//
 // Host-tested against golden bytes that the app's own test checks too
 // (test/test_team_wire.cpp here, test/team/team_wire_golden_test.dart there).
 
@@ -119,6 +126,8 @@ struct Position {
   uint16_t name_hash = 0;
   uint8_t heard_n = 0;
   uint16_t heard[4] = {0};
+  bool has_seq = false;   // flag 0x80: the beacon number
+  uint16_t seq = 0;
 };
 
 struct RoleDef {
@@ -145,6 +154,8 @@ struct Alert {
   uint8_t accuracy_m = 0;
   char callsign[kMaxCallsign + 1] = {0};
   char note[kMaxAlertNote + 1] = {0};
+  bool has_nonce = false;   // flag 0x04: a repeat's number
+  uint8_t nonce = 0;
 };
 
 struct Marker {
@@ -250,7 +261,7 @@ inline size_t encode(const Position& x, uint8_t* out, size_t cap) {
   const uint32_t rid = x.role > kMaxRoleId ? 0 : x.role;
   const bool ext = rid >= (uint32_t)kRoleEscape;
   w.u8((x.has_alt ? 0x01 : 0) | (x.has_motion ? 0x02 : 0) | (x.from_radio ? 0x04 : 0) | (x.sos ? 0x08 : 0) |
-       (x.relayed ? 0x10 : 0) | (ext ? 0x20 : 0) | (x.has_name_hash ? 0x40 : 0));
+       (x.relayed ? 0x10 : 0) | (ext ? 0x20 : 0) | (x.has_name_hash ? 0x40 : 0) | (x.has_seq ? 0x80 : 0));
   w.u32((uint32_t)deg7(x.lat));
   w.u32((uint32_t)deg7(x.lon));
   w.u16((uint16_t)(int16_t)(x.has_alt ? x.alt_m : 0));
@@ -270,12 +281,14 @@ inline size_t encode(const Position& x, uint8_t* out, size_t cap) {
     w.u8(k);
     for (uint8_t i = 0; i < k; i++) w.u16(x.heard[i]);
   }
+  if (x.has_seq) w.u16(x.seq);
   return w.ok ? w.n : 0;
 }
 
 inline bool parse(const uint8_t* p, size_t n, Position& x) {
   R r(p, n);
-  if (!r.has(25) || r.u8() != kPosition) return false;
+  // 23: every fixed field and an empty callsign (25 dropped short callsigns)
+  if (!r.has(23) || r.u8() != kPosition) return false;
   memcpy(x.key4, p + 1, 4);
   r.o = 5;
   const uint32_t flags = r.u8();
@@ -307,6 +320,8 @@ inline bool parse(const uint8_t* p, size_t n, Position& x) {
     if (k > 4) k = 4;
     for (uint32_t i = 0; i < k && r.has(2); i++) x.heard[x.heard_n++] = (uint16_t)r.u16();
   }
+  x.has_seq = (flags & 0x80) && r.has(2);
+  x.seq = x.has_seq ? (uint16_t)r.u16() : 0;
   x.color = (uint8_t)(rc & 0x0F);
   if (x.color >= kColors) x.color = 0;
   x.from_radio = flags & 0x04;
@@ -320,12 +335,13 @@ inline size_t encode(const Alert& x, uint8_t* out, size_t cap) {
   w.u8(kAlert);
   w.raw(x.key4, 4);
   w.u16(x.id);
-  w.u8((x.active ? 0x01 : 0) | (x.has_pos ? 0x02 : 0) | ((uint32_t)x.type << 4));
+  w.u8((x.active ? 0x01 : 0) | (x.has_pos ? 0x02 : 0) | (x.has_nonce ? 0x04 : 0) | ((uint32_t)x.type << 4));
   w.u32((uint32_t)(x.has_pos ? deg7(x.lat) : 0));
   w.u32((uint32_t)(x.has_pos ? deg7(x.lon) : 0));
   w.u8(x.accuracy_m);
   w.str(x.callsign, kMaxCallsign);
   w.str(x.note, kMaxAlertNote);
+  if (x.has_nonce) w.u8(x.nonce);
   return w.ok ? w.n : 0;
 }
 
@@ -346,6 +362,8 @@ inline bool parse(const uint8_t* p, size_t n, Alert& x) {
   if (x.type >= kAlertTypes) x.type = 0;
   if (!r.str(x.callsign, sizeof x.callsign)) x.callsign[0] = 0;
   if (!r.str(x.note, sizeof x.note)) x.note[0] = 0;
+  x.has_nonce = (st & 0x04) && r.has(1);
+  x.nonce = x.has_nonce ? (uint8_t)r.u8() : 0;
   return true;
 }
 
