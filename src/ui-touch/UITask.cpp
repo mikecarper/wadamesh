@@ -1,6 +1,7 @@
 #include "UITask.h"
 #include "TouchSleep.h"
 #include "ChatHashtag.h"
+#include "NameHue.h"         // a person's colour, as the official MeshCore app picks it
 #include <climits>         // INT_MAX (glibc does not pull it in transitively, macOS/ESP-IDF do)
 
 #if defined(WADA_WEB)
@@ -982,13 +983,9 @@ static int rgbHue(uint32_t rgb) {
   else              h = 60 * (r - g) / d + 240;
   return (h + 360) % 360;
 }
-// A name's hue: the same FNV-1a hash the bubble colours have always used, so a
-// person's name, bubble, glyph and initials ball all agree.
-static int nameHue(const char* name) {
-  uint32_t h = 2166136261u;
-  for (const char* p = name; p && *p; ++p) { h ^= (uint8_t)*p; h *= 16777619u; }
-  return (int)(h % 360u);
-}
+// A name's hue (NameHue.h): the official MeshCore app's, so a person's name, bubble,
+// glyph and initials ball here have the colour that app and MeshCore Open TAK give them.
+static int nameHue(const char* name) { return namehue::hue(name); }
 // A name's colour in a look: vivid by default, at full blast in Neon, soft in Pastel,
 // a little lighter in Day (the Day bubbles are dark slate). The "For" forms take the
 // look as arguments, so the Theme page's preview can show one that is not applied yet.
