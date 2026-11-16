@@ -451,7 +451,14 @@ protected:
   // DataStoreHost methods
   bool onContactLoaded(const ContactInfo& contact) override { return addContact(contact); }
   bool getContactForSave(uint32_t idx, ContactInfo& contact) override { return getContactByIdx(idx, contact); }
-  bool onChannelLoaded(uint8_t channel_idx, const ChannelDetails& ch) override { return setChannel(channel_idx, ch); }
+  // A saved slot is always kept. setChannel() refuses a name the #r2- rules
+  // reject, and a refusal here ended the load: that slot and every slot after
+  // it were dropped, and the next save wrote the shorter list back, losing
+  // those channels for good (their chat history stayed). Such a slot is kept
+  // as it was saved instead; only a full table stops the load.
+  bool onChannelLoaded(uint8_t channel_idx, const ChannelDetails& ch) override {
+    return setChannel(channel_idx, ch) || BaseChatMesh::setChannel(channel_idx, ch);
+  }
   bool getChannelForSave(uint8_t channel_idx, ChannelDetails& ch) override { return getChannelRaw(channel_idx, ch); }
 
   void clearPendingReqs() {
