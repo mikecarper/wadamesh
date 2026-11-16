@@ -46,6 +46,10 @@ static const char* kP4 =
     "500102030498ebd0073b5a20b51b0000000000ff8b0507416c7068612d311234";
 static const char* kA3 =
     "53aabbccdd000104000000000000000000000007";
+// A teammate with no GPS fix or location set ("here, no position"): lat and
+// lon both 0x7FFFFFFF. The app's team_wire_golden_test.dart checks it too.
+static const char* kP5 =
+    "5001020304847fffffff7fffffff00000000002a000005544465636b0001";
 static const char* kM1 =
     "4d0a0b0c0d1234567800041bed17f8b76cda4868eb2c5008526f636b66616c6c1d547261696c20626c6f636b65642070617374207468652062726964676500";
 static const char* kM2 =
@@ -154,6 +158,26 @@ static void golden() {
     snprintf(p1c.callsign, sizeof p1c.callsign, "J");
     const size_t n1 = TeamWire::encode(p1c, pb, sizeof pb);
     CHECK(n1 == 24 && TeamWire::parse(pb, n1, q) && !strcmp(q.callsign, "J"));
+
+    // No position: still a beacon (the team lists them); older readers drop it.
+    TeamWire::Position p5;
+    key(p5.key4, 0x01020304);
+    p5.has_pos = false;
+    p5.battery_pct = 42;
+    p5.from_radio = true;
+    snprintf(p5.callsign, sizeof p5.callsign, "TDeck");
+    p5.has_seq = true; p5.seq = 1;
+    pn = TeamWire::encode(p5, pb, sizeof pb);
+    printf("P5 %s\n", hex(pb, pn).c_str());
+    CHECK(hex(pb, pn) == kP5);
+    v = unhex(kP5);
+    CHECK(TeamWire::parse(v.data(), v.size(), q));
+    CHECK(!q.has_pos && q.battery_pct == 42 && !strcmp(q.callsign, "TDeck") && q.seq == 1 && q.from_radio);
+    v = unhex(kP1);
+    CHECK(TeamWire::parse(v.data(), v.size(), q) && q.has_pos);
+    v = unhex(kP5);
+    v[6] = 0x7E;   // anything else out of range is still rejected
+    CHECK(!TeamWire::parse(v.data(), v.size(), q));
 
     TeamWire::Alert a3;
     key(a3.key4, 0xAABBCCDD);

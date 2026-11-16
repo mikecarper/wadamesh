@@ -72726,6 +72726,7 @@ static team::Member* hwNearestMate(double* dist_m) {
   for (int k = 0; k < team::kMaxMembers; k++) {
     team::Member* m = c->member(k);
     if (!m || c->freshness(*m) == team::Fresh::Lost) continue;
+    if (fix && !m->pos.has_pos) continue;   // nearest needs a position
     const double d = fix ? TeamWire::distanceM(la, lo, m->pos.lat, m->pos.lon) : (double)(millis() - m->heard_ms);
     if (d < bd) { bd = d; best = m; hwMateIdx = k; }
   }
