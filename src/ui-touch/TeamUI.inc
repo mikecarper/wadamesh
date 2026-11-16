@@ -2195,7 +2195,7 @@ static void buildSetup(lv_obj_t* b) {
     lv_obj_center(l);
     shown++;
   }
-  if (!shown) lbl(row, TR("No private channels. Join the team's channel first (scan its QR in MeshCore Open TAK's channel settings, or add it in Chats)."), &g_font_12, 0xF2A33A);
+  if (!shown) lbl(row, TR("No private channels. Join a team by sound below, add the team's channel in Chats, or add it from MeshCore Open TAK with this radio connected."), &g_font_12, 0xF2A33A);
   {
     // One scan sets a newcomer up (TEAM_SETUP.md).
     lv_obj_t* x = lv_btn_create(b);
