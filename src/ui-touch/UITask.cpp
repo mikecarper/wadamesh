@@ -10454,8 +10454,13 @@ struct ActItem {
   bool danger;
 };
 static lv_obj_t* s_actlist_root = nullptr;
-static ActItem   s_actlist_items[16];
+static ActItem   s_actlist_items[32];
 static int       s_actlist_n = 0;
+// A choice list (openChoiceList): rows pick an index, the current one ticked,
+// optionally each with a colour swatch.
+static void    (*s_actlist_pick)(int) = nullptr;
+static int       s_actlist_sel = -1;
+static const uint32_t* s_actlist_swatch = nullptr;
 
 static void actListClose() {
   if (s_actlist_root) popupClose(&s_actlist_root);
@@ -10471,9 +10476,11 @@ static void actListRowCb(lv_event_t* e) {
   const int i = (int)(intptr_t)lv_event_get_user_data(e);
   if (i < 0 || i >= s_actlist_n) return;
   void (*fn)() = s_actlist_items[i].fn;
+  void (*pick)(int) = s_actlist_pick;
   if (lv_indev_t* in = lv_indev_get_act()) lv_indev_wait_release(in);
   actListClose();
-  if (fn) fn();
+  if (pick) pick(i);
+  else if (fn) fn();
 }
 static void actListCloseCb(lv_event_t* e) {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -10495,7 +10502,27 @@ static lv_obj_t* actListMakeClose(lv_obj_t* parent) {
   return x;
 }
 
+static void actListOpen(const char* title, const ActItem* items, int n);
 static void openActionList(const char* title, const ActItem* items, int n) {
+  s_actlist_pick = nullptr;
+  s_actlist_sel = -1;
+  s_actlist_swatch = nullptr;
+  actListOpen(title, items, n);
+}
+// A list to choose one of `n` from: `pick(i)` runs after it closes, `selected`
+// is ticked, and `swatches` (0xRRGGBB, may be null) puts a colour dot by each.
+// `labels` must outlive the list.
+static void openChoiceList(const char* title, const char* const* labels, int n, int selected,
+                           void (*pick)(int), const uint32_t* swatches = nullptr) {
+  ActItem items[32];
+  if (n > 32) n = 32;
+  for (int i = 0; i < n; ++i) items[i] = { nullptr, labels[i], nullptr, false };
+  s_actlist_pick = pick;
+  s_actlist_sel = selected;
+  s_actlist_swatch = swatches;
+  actListOpen(title, items, n);
+}
+static void actListOpen(const char* title, const ActItem* items, int n) {
   actListClose();
   if (n > (int)(sizeof s_actlist_items / sizeof s_actlist_items[0])) n = (int)(sizeof s_actlist_items / sizeof s_actlist_items[0]);
   for (int i = 0; i < n; ++i) s_actlist_items[i] = items[i];
@@ -10569,6 +10596,26 @@ static void openActionList(const char* title, const ActItem* items, int n) {
       lv_obj_set_style_bg_opa(hl, LV_OPA_COVER, LV_PART_MAIN);
     }
     lv_coord_t tx = 16;
+    if (s_actlist_swatch) {   // a choice list's colour dot
+      lv_obj_t* dot = lv_obj_create(r);
+      lv_obj_remove_style_all(dot);
+      lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_set_size(dot, SC(18), SC(18));
+      lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+      lv_obj_set_style_bg_color(dot, lv_color_hex(s_actlist_swatch[i]), LV_PART_MAIN);
+      lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, LV_PART_MAIN);
+      lv_obj_set_style_border_width(dot, 1, LV_PART_MAIN);
+      lv_obj_set_style_border_color(dot, lv_color_hex(COLOR_BORDER), LV_PART_MAIN);
+      lv_obj_align(dot, LV_ALIGN_LEFT_MID, 16, 0);
+      tx = 16 + SC(28);
+    }
+    if (s_actlist_pick && i == s_actlist_sel) {   // the current choice
+      lv_obj_t* ck = lv_label_create(r);
+      lv_label_set_text(ck, LV_SYMBOL_OK);
+      lv_obj_set_style_text_font(ck, &g_font_16, LV_PART_MAIN);
+      lv_obj_set_style_text_color(ck, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
+      lv_obj_align(ck, LV_ALIGN_RIGHT_MID, -14, 0);
+    }
     if (it.icon) {
       lv_obj_t* ic = lv_label_create(r);
       lv_label_set_text(ic, it.icon);
@@ -10580,7 +10627,7 @@ static void openActionList(const char* title, const ActItem* items, int n) {
     lv_obj_t* lb = lv_label_create(r);
     lv_label_set_text(lb, it.label);
     // A name too long for the row at this text size wraps, and the row grows to hold it.
-    const lv_coord_t lw = (lv_coord_t)(card_w - tx - 12);
+    const lv_coord_t lw = (lv_coord_t)(card_w - tx - (s_actlist_pick ? SC(40) : 12));
     lv_point_t lsz;
     lv_txt_get_size(&lsz, it.label, &g_font_14, 0, 0, lw, LV_TEXT_FLAG_NONE);
     if (lsz.y + SC(12) > row_h) lv_obj_set_height(r, (lv_coord_t)(lsz.y + SC(12)));
