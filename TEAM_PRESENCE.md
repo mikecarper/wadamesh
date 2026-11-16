@@ -11,6 +11,15 @@ Two changes make every send new bytes. Older readers ignore both.
 - **Beacon number:** each beacon carries one that goes up every time, as position flag `0x80` with a `u16` at the end. It starts from a random value at boot.
 - **Alert repeats:** each send of an alert (three) and of its cancel (two) carries its own number, as alert flag `0x04` with a byte after the note.
 
+## No position
+
+A standalone with no GPS fix and no location set used to send no beacon at all. It never showed on anyone's Team list, though its SOS still came through, because alerts don't need a position. It now sends a "here, no position" beacon: the usual position message with latitude and longitude both `0x7FFFFFFF` (`TeamWire::kNoPosition`), out of range on purpose so older builds reject it as they always did.
+
+- It goes out when the standalone joins, or a teammate is first heard, then every 10 minutes, or every minute while its own alert is up.
+- Receivers list the member with **no position** instead of a range, after everyone who has one. The sheet drops Hound and Map.
+- They aren't drawn on the map, and don't count for the nearest-teammate widget or a message's reach map.
+- A position heard from them before stays (their last known), while battery, status and SOS update.
+
 ## Live, stale, lost
 
 | | Last beacon |

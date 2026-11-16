@@ -317,19 +317,23 @@ bool Core::sendRaw(const uint8_t* p, size_t n) {
   return io_->send(cfg.channel, p, n);
 }
 
+// With no GPS fix and no location set, still a beacon ("here, no position",
+// TeamWire.h), so teammates list this radio.
 bool Core::sendPosition() {
   Fix f;
-  if (!active() || !io_->fix(f)) return false;
+  if (!active()) return false;
+  const bool has = io_->fix(f);
   TeamWire::Position p;
   io_->selfKey4(p.key4);
-  p.lat = f.lat;
-  p.lon = f.lon;
-  p.has_alt = f.has_alt;
+  p.has_pos = has;
+  p.lat = has ? f.lat : 0;
+  p.lon = has ? f.lon : 0;
+  p.has_alt = has && f.has_alt;
   p.alt_m = (int16_t)f.alt_m;
-  p.has_motion = f.has_motion;
+  p.has_motion = has && f.has_motion;
   p.speed_mps = f.speed_mps;
   p.heading_deg = f.heading_deg;
-  p.accuracy_m = f.accuracy_m;
+  p.accuracy_m = has ? f.accuracy_m : 0;
   p.battery_pct = io_->batteryPct();
   p.role = cfg.role;
   p.color = cfg.color;
@@ -354,8 +358,10 @@ bool Core::sendPosition() {
   force_beacon_ = false;
   beaconed_ = true;
   last_beacon_ms_ = io_->nowMs();
-  last_fix_ = f;
-  compatAfterBeacon();
+  if (has) {
+    last_fix_ = f;
+    compatAfterBeacon();   // TEAM's #TEL needs a position
+  }
   io_->changed();
   return true;
 }
@@ -425,8 +431,19 @@ void Core::tick() {
   }
   if (!cfg.share) return;
   Fix f;
-  if (!io_->fix(f)) return;
   const long since = beaconed_ ? (long)((now - last_beacon_ms_) / 1000) : -1;
+  if (!io_->fix(f)) {
+    // No fix or location set: still say we're here (TeamWire.h), as often as
+    // a still member, sooner when a teammate is heard or an alert is up.
+    if (heard_beacon_due_ms_ && (int32_t)(now - heard_beacon_due_ms_) >= 0) {
+      heard_beacon_due_ms_ = 0;
+      heard_beacon_last_ms_ = now;
+      heard_beaconed_ = true;
+      force_beacon_ = true;
+    }
+    if (since < 0 || (force_beacon_ && since >= 5) || since >= 600 || (own_active_ && since >= 60)) sendPosition();
+    return;
+  }
   double turn = 0;
   if (beaconed_ && f.has_motion && last_fix_.has_motion) {
     turn = fmod(f.heading_deg - last_fix_.heading_deg + 540.0, 360.0) - 180.0;
@@ -529,8 +546,25 @@ void Core::onPosition(const TeamWire::Position& x) {
     for (int i = 1; i < kMaxMembers; i++)
       if ((int32_t)(members_[i].heard_ms - members_[slot].heard_ms) < 0) slot = i;
   }
+  // "Here, no position": listed and heard now; a position heard from them
+  // before stays (their last known).
+  const bool keep = !x.has_pos && members_[slot].used && keyEq(members_[slot].pos.key4, x.key4) &&
+                    members_[slot].pos.has_pos;
+  const TeamWire::Position before = members_[slot].pos;
   members_[slot].used = true;
   members_[slot].pos = x;
+  if (keep) {
+    TeamWire::Position& p = members_[slot].pos;
+    p.has_pos = true;
+    p.lat = before.lat;
+    p.lon = before.lon;
+    p.has_alt = before.has_alt;
+    p.alt_m = before.alt_m;
+    p.has_motion = before.has_motion;
+    p.speed_mps = before.speed_mps;
+    p.heading_deg = before.heading_deg;
+    p.accuracy_m = before.accuracy_m;
+  }
   members_[slot].heard_ms = io_->nowMs();
   io_->changed();
 }
@@ -693,6 +727,7 @@ bool Core::hound(double* lat, double* lon, char* label, size_t cap) {
   if (hound_ == 1) {
     for (auto& m : members_) {
       if (!m.used || !keyEq(m.pos.key4, hound_key_)) continue;
+      if (!m.pos.has_pos) return false;
       *lat = m.pos.lat;
       *lon = m.pos.lon;
       snprintf(label, cap, "%s", m.pos.callsign);

@@ -102,7 +102,8 @@ struct TestIo : team::Io {
   void selfKey4(uint8_t out[4]) override { out[0] = 0xC0; out[1] = 0xFF; out[2] = 0xEE; out[3] = 0x00; }
   bool selfKey6(uint8_t out[6]) override { selfKey4(out); out[4] = 0x12; out[5] = 0x34; return true; }
   const char* nodeName() override { return "TDeck"; }
-  bool fix(team::Fix& out) override { out = f; return true; }
+  bool has_fix = true;
+  bool fix(team::Fix& out) override { out = f; return has_fix; }
   int batteryPct() override { return 64; }
   int batteryMv() override { return 3900; }
   bool channelOk(const char* name) override { return !strcmp(name, "ops"); }
@@ -227,9 +228,52 @@ static void core() {
   CHECK(io.texts.empty());
 }
 
+// A standalone with no GPS fix and no location set still beacons, and a
+// teammate lists it (TeamWire.h "no position").
+static void noPosition() {
+  TestIo a, b;
+  a.has_fix = false;
+  team::Core ca(&a), cb(&b);
+  ca.begin();
+  cb.begin();
+  for (team::Core* c : {&ca, &cb}) {
+    c->cfg.enabled = true;
+    snprintf(c->cfg.channel, sizeof c->cfg.channel, "ops");
+  }
+  snprintf(ca.cfg.callsign, sizeof ca.cfg.callsign, "M9");
+  ca.tick();
+  CHECK(a.sent.size() == 1);
+  if (a.sent.empty()) return;
+  TeamWire::Position x;
+  CHECK(TeamWire::parse(a.sent[0].data(), a.sent[0].size(), x) && !x.has_pos && !strcmp(x.callsign, "M9"));
+  b.selfKey4(x.key4);   // b's fake key is fixed; give the beacon another sender
+  x.key4[3] = 0x55;
+  uint8_t buf[TeamWire::kMaxPayload];
+  size_t n = TeamWire::encode(x, buf, sizeof buf);
+  cb.onPayload("ops", buf, n);
+  const team::Member* m = memberCalled(cb, "M9");
+  CHECK(m && !m->pos.has_pos);
+  // Not again until it's due (as a still member)...
+  ca.tick();
+  CHECK(a.sent.size() == 1);
+  a.now += 601000;
+  ca.tick();
+  CHECK(a.sent.size() == 2);
+  // ...and a position heard before stays when the fix goes.
+  x.has_pos = true; x.lat = 47.5; x.lon = -122.2; x.has_seq = true; x.seq = 9;
+  n = TeamWire::encode(x, buf, sizeof buf);
+  cb.onPayload("ops", buf, n);
+  x.has_pos = false; x.seq = 10; x.battery_pct = 12;
+  n = TeamWire::encode(x, buf, sizeof buf);
+  cb.onPayload("ops", buf, n);
+  m = memberCalled(cb, "M9");
+  CHECK(m && m->pos.has_pos && fabs(m->pos.lat - 47.5) < 1e-6 && m->pos.battery_pct == 12);
+}
+
 int main() {
   formats();
   core();
+  noPosition();
   if (g_fail) {
     printf("%d failure(s)\n", g_fail);
     return 1;

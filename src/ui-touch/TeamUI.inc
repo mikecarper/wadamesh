@@ -417,6 +417,13 @@ static void rangeTo(double lat, double lon, char* out, size_t cap) {
   TeamWire::rangeBearing(TeamWire::distanceM(ml, mo, lat, lon), TeamWire::bearingDeg(ml, mo, lat, lon), out, cap);
 }
 
+// A teammate's range and bearing, or that they have no position (no GPS fix
+// or location set: they're in the list, not on the map).
+static void memberRange(const team::Member& m, char* out, size_t cap) {
+  if (!m.pos.has_pos) { snprintf(out, cap, "%s", TR("no position")); return; }
+  rangeTo(m.pos.lat, m.pos.lon, out, cap);
+}
+
 // A sheet's "Map" (teammates, pins, watched reports...): the map centred on the
 // point, zoomed in to street level if it was further out (as the On map list
 // does), so the point itself is what's in view.
@@ -1001,7 +1008,7 @@ static void teamDrawMapOverlay(lv_obj_t* parent, double cwx, double cwy) {
   }
   for (int i = 0; i < team::kMaxMembers; i++) {
     team::Member* m = c->member(i);
-    if (!m || !toScreen(m->pos.lat, m->pos.lon, cwx, cwy, &sx, &sy)) continue;
+    if (!m || !m->pos.has_pos || !toScreen(m->pos.lat, m->pos.lon, cwx, cwy, &sx, &sy)) continue;
     const team::Fresh fr = c->freshness(*m);
     if (fr == team::Fresh::Lost) continue;
     if (memcmp(m->pos.key4, self4, 4) != 0 && mapIsNew(hlKeyMember(*m), hl_now, maphl::kUnknownAge))
@@ -1204,7 +1211,7 @@ static void memberSheet(int i) {
   s_sel_kind = 0;
   s_sel_idx = i;
   char body[200], rb[40];
-  rangeTo(m->pos.lat, m->pos.lon, rb, sizeof rb);
+  memberRange(*m, rb, sizeof rb);
   const uint32_t ago = (millis() - m->heard_ms) / 60000;
   char batt[12] = "";
   if (m->pos.battery_pct >= 0) snprintf(batt, sizeof batt, " · %d%%", m->pos.battery_pct);
@@ -1223,17 +1230,19 @@ static void memberSheet(int i) {
     break;
   }
 #endif
-  sheetBtn(card, TR("Hound"), [](lv_event_t*) {
-    team::Member* x = s_core ? s_core->member(s_sel_idx) : nullptr;
-    if (x) s_core->houndMember(x->pos.key4);
-    sheetClose();
-    houndRefresh();
-  }, nullptr, 0xF2A33A);
-  sheetBtn(card, TR("Map"), [](lv_event_t*) {
-    team::Member* x = s_core ? s_core->member(s_sel_idx) : nullptr;
-    sheetClose();
-    if (x) showOnMap(x->pos.lat, x->pos.lon);
-  });
+  if (m->pos.has_pos) {
+    sheetBtn(card, TR("Hound"), [](lv_event_t*) {
+      team::Member* x = s_core ? s_core->member(s_sel_idx) : nullptr;
+      if (x) s_core->houndMember(x->pos.key4);
+      sheetClose();
+      houndRefresh();
+    }, nullptr, 0xF2A33A);
+    sheetBtn(card, TR("Map"), [](lv_event_t*) {
+      team::Member* x = s_core ? s_core->member(s_sel_idx) : nullptr;
+      sheetClose();
+      if (x && x->pos.has_pos) showOnMap(x->pos.lat, x->pos.lon);
+    });
+  }
   sheetBtn(card, TR("Close"), [](lv_event_t*) { sheetClose(); });
 }
 
@@ -1493,7 +1502,7 @@ int teamOnMapFill(lv_obj_t* list, lv_coord_t rw, double self_lat, double self_lo
   if (team::Core* c = s_core) {
     for (int i = 0; i < team::kMaxMembers; i++) {
       team::Member* m = c->member(i);
-      if (!m) continue;
+      if (!m || !m->pos.has_pos) continue;   // the list has them; this is the map's
       char kind[40];
       c->roleName(m->pos.role, kind, sizeof kind);
       if (m->pos.sos) snprintf(kind + strlen(kind), sizeof kind - strlen(kind), " \xC2\xB7 SOS");
@@ -1628,8 +1637,8 @@ int teamHeardBy(uint32_t ts, const char* text, char (*names)[21], double* lat, d
         for (int q = 0; q < n && !dup; q++) dup = !strcmp(names[q], m->pos.callsign[0] ? m->pos.callsign : "?");
         if (dup) break;
         snprintf(names[n], 21, "%s", m->pos.callsign[0] ? m->pos.callsign : "?");
-        if (lat) lat[n] = m->pos.lat;
-        if (lon) lon[n] = m->pos.lon;
+        if (lat) lat[n] = m->pos.has_pos ? m->pos.lat : 0;   // 0, 0: not plotted
+        if (lon) lon[n] = m->pos.has_pos ? m->pos.lon : 0;
         n++;
         break;
       }
@@ -1864,7 +1873,8 @@ static void buildTeam(lv_obj_t* b) {
   for (int i = 0; i < team::kMaxMembers; i++) {
     team::Member* m = c->member(i);
     if (!m) continue;
-    dist[i] = fix ? TeamWire::distanceM(ml, mo, m->pos.lat, m->pos.lon) : 0;
+    // No position: after everyone who has one.
+    dist[i] = !m->pos.has_pos ? 1e18 : fix ? TeamWire::distanceM(ml, mo, m->pos.lat, m->pos.lon) : 0;
     order[n++] = i;
   }
   for (int i = 1; i < n; i++)
@@ -1878,7 +1888,7 @@ static void buildTeam(lv_obj_t* b) {
     lv_obj_set_style_border_color(card, lv_color_hex(TeamWire::colorRgb(m->pos.color)), LV_PART_MAIN);
     lv_obj_set_style_border_width(card, 2, LV_PART_MAIN);
     char rb[40];
-    rangeTo(m->pos.lat, m->pos.lon, rb, sizeof rb);
+    memberRange(*m, rb, sizeof rb);
     snprintf(line, sizeof line, "%s%s  %s", m->pos.sos ? LV_SYMBOL_WARNING " " : "", m->pos.callsign[0] ? m->pos.callsign : "?", rb);
     lbl(card, line, &g_font_14, fr == team::Fresh::Live ? COLOR_TEXT : COLOR_SUB);
     const uint32_t ago = (millis() - m->heard_ms) / 60000;

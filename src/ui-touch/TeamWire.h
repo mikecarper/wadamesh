@@ -39,6 +39,10 @@
 // An alert's flag 0x04 adds [nonce u8] after the note, for its repeats. Older
 // readers ignore both (TEAM_PRESENCE.md).
 //
+// A member with no GPS fix and no location set still beacons, so they show in
+// the team list: lat and lon are both 0x7FFFFFFF (kNoPosition, out of range),
+// which builds before this drop as invalid. The app's team_wire.dart matches.
+//
 // Host-tested against golden bytes that the app's own test checks too
 // (test/test_team_wire.cpp here, test/team/team_wire_golden_test.dart there).
 
@@ -128,6 +132,8 @@ struct Position {
   uint16_t heard[4] = {0};
   bool has_seq = false;   // flag 0x80: the beacon number
   uint16_t seq = 0;
+  // False: "here, no position" (no fix, no location set). lat/lon mean nothing.
+  bool has_pos = true;
 };
 
 struct RoleDef {
@@ -251,6 +257,8 @@ struct R {
 };
 
 inline int32_t deg7(double v) { return (int32_t)llround(v * 1e7); }
+// Latitude and longitude of a "no position" beacon: out of range on purpose.
+constexpr uint32_t kNoPosition = 0x7FFFFFFFu;
 inline double undeg7(int32_t v) { return v / 1e7; }
 inline long clampl(long v, long lo, long hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -262,8 +270,8 @@ inline size_t encode(const Position& x, uint8_t* out, size_t cap) {
   const bool ext = rid >= (uint32_t)kRoleEscape;
   w.u8((x.has_alt ? 0x01 : 0) | (x.has_motion ? 0x02 : 0) | (x.from_radio ? 0x04 : 0) | (x.sos ? 0x08 : 0) |
        (x.relayed ? 0x10 : 0) | (ext ? 0x20 : 0) | (x.has_name_hash ? 0x40 : 0) | (x.has_seq ? 0x80 : 0));
-  w.u32((uint32_t)deg7(x.lat));
-  w.u32((uint32_t)deg7(x.lon));
+  w.u32(x.has_pos ? (uint32_t)deg7(x.lat) : kNoPosition);
+  w.u32(x.has_pos ? (uint32_t)deg7(x.lon) : kNoPosition);
   w.u16((uint16_t)(int16_t)(x.has_alt ? x.alt_m : 0));
   w.u8((uint32_t)clampl(x.has_motion ? lround(x.speed_mps * 2.0) : 0, 0, 255));
   double h = x.has_motion ? fmod((double)x.heading_deg, 360.0) : 0;
@@ -292,8 +300,10 @@ inline bool parse(const uint8_t* p, size_t n, Position& x) {
   memcpy(x.key4, p + 1, 4);
   r.o = 5;
   const uint32_t flags = r.u8();
-  x.lat = undeg7(r.i32());
-  x.lon = undeg7(r.i32());
+  const int32_t raw_lat = r.i32(), raw_lon = r.i32();
+  x.has_pos = !((uint32_t)raw_lat == kNoPosition && (uint32_t)raw_lon == kNoPosition);
+  x.lat = x.has_pos ? undeg7(raw_lat) : 0;
+  x.lon = x.has_pos ? undeg7(raw_lon) : 0;
   if (fabs(x.lat) > 90 || fabs(x.lon) > 180) return false;
   const int16_t alt = r.i16();
   const uint32_t spd = r.u8(), hdg = r.u8();
