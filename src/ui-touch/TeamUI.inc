@@ -1955,18 +1955,79 @@ static void buildPins(lv_obj_t* b) {
         COLOR_SUB);
 }
 
+static void openRolePicker();
+static void openColourPicker();
+static void openStatusPicker();
 static void setupCycle(lv_event_t* e) {
   team::Core* c = s_core;
   switch ((int)(intptr_t)lv_event_get_user_data(e)) {
     case 0: c->cfg.enabled = !c->cfg.enabled; break;
-    case 1: c->cfg.role = (uint8_t)c->nextRole(c->cfg.role); break;
-    case 2: c->cfg.color = (uint8_t)((c->cfg.color + 1) % TeamWire::kColors); break;
-    case 3: c->cfg.status = (uint8_t)((c->cfg.status + 1) % TeamWire::kStatuses); break;
+    case 1: openRolePicker(); return;
+    case 2: openColourPicker(); return;
+    case 3: openStatusPicker(); return;
     case 4: c->cfg.share = !c->cfg.share; break;
   }
   c->identityChanged();
   renderMapMarkers();
   pageBuild();
+}
+
+// Role, Colour and Status open a list to choose from (they used to step to the
+// next one on each tap).
+static void setupApplied() {
+  s_core->identityChanged();
+  renderMapMarkers();
+  pageBuild();
+}
+static char s_pick_lbl[TeamWire::kMaxRoleId + 1][TeamWire::kMaxRoleName + 4];
+static const char* s_pick_ptr[TeamWire::kMaxRoleId + 1];
+static int s_pick_role[TeamWire::kMaxRoleId + 1];   // list row -> role id
+static uint32_t s_pick_rgb[TeamWire::kColors];
+
+static void openRolePicker() {
+  team::Core* c = s_core;
+  if (!c) return;
+  int n = 0, sel = -1;
+  for (int id = 0; id <= TeamWire::kMaxRoleId; id++) {
+    if (!c->roleAvailable(id)) continue;
+    c->roleName(id, s_pick_lbl[n], sizeof s_pick_lbl[n]);
+    s_pick_ptr[n] = s_pick_lbl[n];
+    s_pick_role[n] = id;
+    if (id == c->cfg.role) sel = n;
+    n++;
+  }
+  openChoiceList(TR("Role"), s_pick_ptr, n, sel, [](int i) {
+    if (!s_core) return;
+    s_core->cfg.role = (uint8_t)s_pick_role[i];
+    setupApplied();
+  });
+}
+static void openColourPicker() {
+  team::Core* c = s_core;
+  if (!c) return;
+  for (int i = 0; i < TeamWire::kColors; i++) {
+    snprintf(s_pick_lbl[i], sizeof s_pick_lbl[i], "%s", TR(TeamWire::colorName(i)));
+    s_pick_ptr[i] = s_pick_lbl[i];
+    s_pick_rgb[i] = TeamWire::colorRgb(i);
+  }
+  openChoiceList(TR("Colour"), s_pick_ptr, TeamWire::kColors, c->cfg.color, [](int i) {
+    if (!s_core) return;
+    s_core->cfg.color = (uint8_t)i;
+    setupApplied();
+  }, s_pick_rgb);
+}
+static void openStatusPicker() {
+  team::Core* c = s_core;
+  if (!c) return;
+  for (int i = 0; i < TeamWire::kStatuses; i++) {
+    snprintf(s_pick_lbl[i], sizeof s_pick_lbl[i], "%s", i ? TR(TeamWire::statusName(i)) : TR("none"));
+    s_pick_ptr[i] = s_pick_lbl[i];
+  }
+  openChoiceList(TR("Status"), s_pick_ptr, TeamWire::kStatuses, c->cfg.status, [](int i) {
+    if (!s_core) return;
+    s_core->cfg.status = (uint8_t)i;
+    setupApplied();
+  });
 }
 
 static void callsignDone(const char* t) {
