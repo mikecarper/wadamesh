@@ -279,8 +279,17 @@ static void linkImgJobBody() {
   }
   j.state = 2;
 }
+// At idle priority, as the photo decoder (VoxAv1Job.cpp) runs: a TLS download and
+// a GIF's decode take seconds, and at the audio worker's priority (3, unpinned)
+// they starved the UI loop (priority 1) for all of it. A T-Deck that got a GIF
+// froze until it was done, and the GIF never seemed to play.
 static void linkImgJobTaskFn(void*) { linkImgJobBody(); vTaskDelete(nullptr); }
-static void linkImgJobWorkerFn(void*) { linkImgJobBody(); }
+static void linkImgJobWorkerFn(void*) {
+  const UBaseType_t prio = uxTaskPriorityGet(nullptr);
+  vTaskPrioritySet(nullptr, tskIDLE_PRIORITY);
+  linkImgJobBody();
+  vTaskPrioritySet(nullptr, prio);
+}
 
 static bool linkImgStart(bool view, uint32_t id, const char* url, const char* title, bool anim = false) {
   LiJob& j = s_li_job;
@@ -295,7 +304,7 @@ static bool linkImgStart(bool view, uint32_t id, const char* url, const char* ti
   j.sd = backupSdFs();
   j.state = 1;
   if (!VoxAudioTask::run(linkImgJobWorkerFn, nullptr) &&
-      xTaskCreatePinnedToCore(linkImgJobTaskFn, "linkimg", 16384, nullptr, 2, nullptr, 0) != pdPASS) {
+      xTaskCreatePinnedToCore(linkImgJobTaskFn, "linkimg", 16384, nullptr, tskIDLE_PRIORITY, nullptr, 0) != pdPASS) {
     j.state = 0;
     return false;
   }
@@ -491,8 +500,15 @@ stills:
   g.state = 3;
   s_gif_busy = false;
 }
+// Idle priority too (see linkImgJobWorkerFn): it downloads and decodes a page of
+// thumbnails.
 static void gifSearchTaskFn(void*) { gifSearchBody(); vTaskDelete(nullptr); }
-static void gifSearchWorkerFn(void*) { gifSearchBody(); }
+static void gifSearchWorkerFn(void*) {
+  const UBaseType_t prio = uxTaskPriorityGet(nullptr);
+  vTaskPrioritySet(nullptr, tskIDLE_PRIORITY);
+  gifSearchBody();
+  vTaskPrioritySet(nullptr, prio);
+}
 
 static lv_obj_t* s_gs_sheet = nullptr;
 static lv_obj_t* s_gs_ta = nullptr;
@@ -522,7 +538,7 @@ static bool gifWorkerStart() {
   s_gif_busy = true;
   s_gs.state = 1;
   if (!VoxAudioTask::run(gifSearchWorkerFn, nullptr) &&
-      xTaskCreatePinnedToCore(gifSearchTaskFn, "gifsearch", 16384, nullptr, 2, nullptr, 0) != pdPASS) {
+      xTaskCreatePinnedToCore(gifSearchTaskFn, "gifsearch", 16384, nullptr, tskIDLE_PRIORITY, nullptr, 0) != pdPASS) {
     s_gs.state = 0;
     s_gif_busy = false;
     return false;

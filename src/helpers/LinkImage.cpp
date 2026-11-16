@@ -351,7 +351,7 @@ Result decodeFrames(const uint8_t* d, size_t n, int max_side, size_t budget, uin
   stbi__context ctx;
   stbi__start_mem(&ctx, d, (int)n);
   uint16_t* px = nullptr;
-  int count = 0;
+  int count = 0, room = 0;   // frames decoded, frames px has room for
   Result r = kOk;
   for (;;) {
     int comp = 0;
@@ -361,9 +361,18 @@ Result decodeFrames(const uint8_t* d, size_t n, int max_side, size_t budget, uin
     if (g->w != sw || g->h != sh) { r = kBroken; break; }
     memcpy(back + (size_t)(count % 2) * full, u, full);
     if (count >= cap) break;   // as many as the budget holds: the rest are left out
-    uint16_t* grown = (uint16_t*)out_realloc(px, frame * (size_t)(count + 1));
-    if (!grown) { r = count ? kOk : kNoMemory; break; }
-    px = grown;
+    if (count == room) {
+      // Half again each time, not one frame: growing by one copied every frame so
+      // far on each frame (150 frames of a full-screen GIF moved gigabytes through
+      // PSRAM, which the display shares). Trimmed to the frames kept at the end.
+      int want = room < 4 ? 4 : room + room / 2;
+      if (want > cap) want = cap;
+      uint16_t* grown = (uint16_t*)out_realloc(px, frame * (size_t)want);
+      if (!grown && want > count + 1) grown = (uint16_t*)out_realloc(px, frame * (size_t)(want = count + 1));
+      if (!grown) { r = count ? kOk : kNoMemory; break; }
+      px = grown;
+      room = want;
+    }
     scaleTo565(u, sw, sh, px + (size_t)count * dw * dh, dw, dh, bg);
     if (delays_ms) delays_ms[count] = (uint16_t)(g->delay >= 20 ? (g->delay > 60000 ? 60000 : g->delay) : 100);
     ++count;
@@ -377,6 +386,8 @@ Result decodeFrames(const uint8_t* d, size_t n, int max_side, size_t budget, uin
     if (px) out_realloc(px, 0);
     return r == kOk ? kBroken : r;
   }
+  if (room > count)   // hand back the room not used
+    if (uint16_t* fit = (uint16_t*)out_realloc(px, frame * (size_t)count)) px = fit;
   *out = px;
   *out_w = dw;
   *out_h = dh;

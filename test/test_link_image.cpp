@@ -3,6 +3,7 @@
 // (JPEG, progressive JPEG, PNG with alpha, GIF, WebP lossy and lossless; BMP is not decoded)
 // to RGB565 at the size asked for.
 //   g++ -std=c++17 -I src test/test_link_image.cpp src/helpers/LinkImage.cpp
+#include <vector>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,6 +141,31 @@ int main() {
     CHECK(linkimg::decodeFrames(anim, sizeof anim, 4, 1u << 20, 0, 2, realloc, &fr, &fw, &fh, &fn, delays) == linkimg::kOk);
     CHECK(fw == 4 && fh == 3 && fn == 2 && fr[0] == 0xF800 && fr[12] == 0x07E0);
     free(fr);
+    // Many frames: the buffer grows by half each time, not a frame at a time (which
+    // copied every earlier frame on each one), and ends at exactly the frames kept.
+    {
+      std::vector<uint8_t> many(anim, anim + sizeof anim - 1);   // without the trailer
+      size_t last = 0;   // the last frame's block: its graphic control extension on
+      for (size_t i = 0; i + 1 < sizeof anim; ++i)
+        if (anim[i] == 0x21 && anim[i + 1] == 0xf9) last = i;
+      for (int k = 0; k < 37; ++k) many.insert(many.end(), anim + last, anim + sizeof anim - 1);
+      many.push_back(0x3b);
+      static int calls = 0;
+      static size_t last_size = 0;
+      auto counting = [](void* p, size_t n) -> void* {
+        ++calls;
+        last_size = n;
+        return realloc(p, n);
+      };
+      uint16_t many_delays[64] = {};
+      CHECK(linkimg::decodeFrames(many.data(), many.size(), 64, 1u << 22, 0, 64, counting, &fr, &fw, &fh, &fn,
+                                  many_delays) == linkimg::kOk);
+      CHECK(fn == 40);
+      CHECK(calls <= 12);   // was 40 (one per frame), each copying all before it
+      CHECK(last_size == (size_t)40 * 8 * 6 * 2);
+      CHECK(fr && fr[0] == 0xF800 && fr[(size_t)39 * 48] == 0x001F);
+      free(fr);
+    }
     // No room, not a GIF.
     CHECK(linkimg::decodeFrames(anim, sizeof anim, 64, 1000, 0, 8, realloc, &fr, &fw, &fh, &fn, delays) == linkimg::kTooLarge);
     CHECK(linkimg::decodeFrames(k_png_alpha, sizeof k_png_alpha, 64, 1u << 20, 0, 8, realloc, &fr, &fw, &fh, &fn, delays) ==
