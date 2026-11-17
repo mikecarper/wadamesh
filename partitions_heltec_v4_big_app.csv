@@ -1,0 +1,29 @@
+# Wadamesh-tak: Heltec V4 and V4-R8 touch builds, 4.5 MB app slots.
+#
+# These two boards started on partitions_tft_touch_big_app.csv (4.375 MB slots,
+# still used by the Wio Tracker L2 and CrowPanel Advance 3.5 / 5.0). Upstream
+# beta_106 (the web console, its Settings tabs, the keyboard language deck)
+# pushed both 35-73 KB past that, so each slot grows to 4.5 MB from the map tile
+# partition (3.75 -> 3.5 MB), the T-Deck's layout
+# (variants/lilygo_tdeck/partitions_tdeck_touch_big_app.csv). spiffs (user data)
+# keeps its offset and size, so prefs / contacts / channels / chat history stay.
+#   * This table only reaches a device with a USB install of the full (merged)
+#     image (the web flasher). An app-only update cannot change it; the old
+#     slots refuse the bigger image cleanly ("too big for this radio's slots:
+#     install once over USB").
+#   * The tile partition moves: it is formatted empty on first mount and the
+#     tiles are fetched or copied again.
+#
+#   0x010000-0x490000  app0    4.5 MB  (ota_0)
+#   0x490000-0x910000  app1    4.5 MB  (ota_1)
+#   0x910000-0xC90000  tiles   3.5 MB  (LittleFS, 0x83)
+#   0xC90000-0xFF0000  spiffs  3.375 MB  [unchanged]
+
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xe000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x480000,
+app1,     app,  ota_1,    0x490000, 0x480000,
+tiles,    data, 0x83,     0x910000, 0x380000,
+spiffs,   data, spiffs,   0xC90000, 0x360000,
+coredump, data, coredump, 0xFF0000, 0x10000,

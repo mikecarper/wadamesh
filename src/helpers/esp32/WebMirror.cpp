@@ -8,6 +8,7 @@
 // what Wi-Fi and Bluetooth need.
 WebMirror& g_web_mirror = psramObject<WebMirror>();
 WebAuthCode g_web_auth;
+WebSessionAuth g_web_session;
 
 #ifndef WEB_MIRROR_RING_BYTES
 #define WEB_MIRROR_RING_BYTES  (384 * 1024)   // PSRAM; holds several banded frames
