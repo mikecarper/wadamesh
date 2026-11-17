@@ -154,6 +154,15 @@ class VoxFetch {
     const uint32_t half = gap / 2 > 400 ? gap / 2 : 400;
     return (uint32_t)(left + 1) * gap + half;
   }
+  // As markedWait, but never longer than a stall (stallWait): the next packet
+  // re-arms it, so a running answer is never cut short, and one the sender
+  // stopped part-way is asked for again in seconds, not after every gap it
+  // said was left (a Max clip waited 3 min 36 s). Same as voxMarkedStallWaitMs.
+  static uint32_t markedStallWait(int left, uint32_t gap) {
+    const uint32_t m = markedWait(left, gap);
+    const uint32_t st = stallWait(gap);
+    return m < st ? m : st;
+  }
   static uint32_t gapRequestDelay(bool relayed, uint32_t packet_gap, uint32_t zero_hop_gap) {
     return relayed ? packet_gap + 1000 : zero_hop_gap + 400;
   }
@@ -244,6 +253,10 @@ class VoxFetch {
     uint8_t rebuilt = 0;       // packets rebuilt from parity
     uint8_t min_hops = 0xFF;   // fewest hops a channel packet of it came over
     bool tried_zero_hop = false;
+    // Some packet came by raw data (a zero-hop push, a direct answer), which
+    // doesn't say how far it came: the sender is likely in range, so ask
+    // zero-hop first. As the app's _IncomingClip.rawSeen.
+    bool raw_seen = false;
   };
 
   struct Orphan {

@@ -658,6 +658,12 @@ int main() {
   assert(VoxFetch::markedWait(0, 900) == 300);
   assert(VoxFetch::markedWait(1, 900) == 2 * 900 + 450);
   assert(VoxFetch::markedWait(3, 600) == 4 * 600 + 400);
+  // A marked answer stopped part-way is asked for again within a stall, not
+  // after every gap the sender said was left.
+  assert(VoxFetch::markedStallWait(100, 2100) == VoxFetch::stallWait(2100));
+  assert(VoxFetch::markedWait(100, 2100) > 200000);
+  assert(VoxFetch::markedStallWait(1, 900) == VoxFetch::markedWait(1, 900));
+  assert(VoxFetch::markedStallWait(0, 900) == 300);
 
   // 18. End-of-answer marker on a channel: the listener's requests say they read
   //     marked packets, and with them a lost tail is asked for again sooner.
