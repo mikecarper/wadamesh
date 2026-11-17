@@ -664,6 +664,12 @@ int main() {
   assert(VoxFetch::markedWait(100, 2100) > 200000);
   assert(VoxFetch::markedStallWait(1, 900) == VoxFetch::markedWait(1, 900));
   assert(VoxFetch::markedStallWait(0, 900) == 300);
+  // A request with no answer yet holds while the clip is on the air.
+  assert(VoxFetch::airQuietMs(220) == 2000);
+  assert(VoxFetch::airQuietMs(700) == 2800);
+  assert(VoxFetch::airHoldMs(1000, 8000, 2000) == 2000 + VoxFetch::kHolderAnswerLeadMs - 1000);
+  assert(VoxFetch::airHoldMs(6000, 8000, 2000) == 0);
+  assert(VoxFetch::airHoldMs(500, 26000, 2000) == 0);
 
   // 18. End-of-answer marker on a channel: the listener's requests say they read
   //     marked packets, and with them a lost tail is asked for again sooner.
