@@ -69,3 +69,11 @@ if _stale(LUAH, [f for f in lua_src if os.path.exists(f)]):
 
 # Wadamesh-tak: the built-in web pages, gzipped (gen-web-pages-gz.py checks its own staleness).
 subprocess.run([sys.executable, os.path.join(HERE, "gen-web-pages-gz.py")], cwd=ROOT, check=True)
+
+# The browser console pages (web/console/) are embedded gzipped in WebConsoleAssets.h.
+WCH = os.path.join(ROOT, "src", "helpers", "esp32", "WebConsoleAssets.h")
+WCG = os.path.join(HERE, "gen-web-console.py")
+wc_src = glob.glob(os.path.join(ROOT, "web", "console", "*")) + [WCG]
+if _stale(WCH, wc_src):
+    print("web console: a page changed, regenerating WebConsoleAssets.h")
+    subprocess.run([sys.executable, WCG], cwd=ROOT, check=True)
