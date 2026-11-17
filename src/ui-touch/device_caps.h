@@ -456,7 +456,9 @@
 // The Bluetooth keyboard's Bulgarian phonetic deck, its Ctrl+Shift language switch
 // and the layout badge above the chat composer (#855). Not the T-LoRa Pager: its app
 // slot is full, and it has a keyboard of its own.
-#if CAP_BLE_KEYBOARD && !defined(TLORA_PAGER)
+// Wadamesh-tak: nor the 2 MB Heltec V4, whose flash the fork's media features fill.
+#if CAP_BLE_KEYBOARD && !defined(TLORA_PAGER) && \
+    !(defined(HELTEC_LORA_V4_TFT) && !defined(HELTEC_LORA_V4_R8))
   #define CAP_BLE_KBD_LANG 1
 #else
   #define CAP_BLE_KBD_LANG 0
@@ -810,7 +812,10 @@
   #endif
 #endif
 #ifndef CAP_WEB_CONSOLE_SETTINGS
-  #if CAP_WEB_CONSOLE && !defined(TLORA_PAGER)
+  // Wadamesh-tak: nor the 2 MB Heltec V4 (it overflowed by 72 KB with them); it never
+  // had these tabs either.
+  #if CAP_WEB_CONSOLE && !defined(TLORA_PAGER) && \
+      !(defined(HELTEC_LORA_V4_TFT) && !defined(HELTEC_LORA_V4_R8))
     #define CAP_WEB_CONSOLE_SETTINGS 1
   #else
     #define CAP_WEB_CONSOLE_SETTINGS 0
