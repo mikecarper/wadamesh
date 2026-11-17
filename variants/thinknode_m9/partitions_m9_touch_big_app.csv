@@ -2,10 +2,12 @@
 #
 # 16 MB layout with TWO EQUAL OTA app slots so the firmware can self-update.
 #
-# Fork change: each app slot grew from 3.875 MB to 4.375 MB, taken from the map
-# tile partition (4.75 MB -> 3.75 MB), the same layout as the T-Deck's
-# (variants/lilygo_tdeck/partitions_tdeck_touch_big_app.csv). The image had
-# reached the old 3.875 MB (0x3E0000) slot. spiffs (user data) keeps its offset
+# Fork changes, each taken from the map tile partition, the T-Deck's layout
+# (variants/lilygo_tdeck/partitions_tdeck_touch_big_app.csv):
+#   * 3.875 -> 4.375 MB app slots (tiles 4.75 -> 3.75 MB): the image had reached
+#     the old 3.875 MB (0x3E0000) slot.
+#   * Upstream beta_106 (the web console and its Settings tabs): 4.375 -> 4.5 MB
+#     (tiles 3.75 -> 3.5 MB). The image was 60 KB over. spiffs (user data) keeps its offset
 # and size, so prefs / contacts / channels / chat history survive.
 #   * This table only reaches a device with a USB install of the full (merged)
 #     image, e.g. the web flasher. An app-only OTA cannot change it, and the
@@ -13,9 +15,9 @@
 #     slots: install once over USB").
 #   * The tile partition moves, so its old contents are gone: it is formatted
 #     empty on first mount (formatOnFail) and tiles are fetched or copied again.
-#   - app0 4.375 MB (ota_0)   ┐ equal A/B slots; OTA ping-pongs between them
-#   - app1 4.375 MB (ota_1)   ┘
-#   - "tiles" 3.75 MB LittleFS partition (subtype 0x83) for the map tab's
+#   - app0 4.5 MB (ota_0)     ┐ equal A/B slots; OTA ping-pongs between them
+#   - app1 4.5 MB (ota_1)     ┘
+#   - "tiles" 3.5 MB LittleFS partition (subtype 0x83) for the map tab's
 #     slippy-tile pack
 #   - spiffs 3.375 MB for user data (/new_prefs, /contacts3, /channels2, chat
 #     history)
@@ -24,17 +26,17 @@
 #   0x000000–0x009000  bootloader + partition table
 #   0x009000–0x00E000  nvs           (20 KB)
 #   0x00E000–0x010000  otadata       (8 KB)
-#   0x010000–0x470000  app0          (4.375 MB, ota_0)
-#   0x470000–0x8D0000  app1          (4.375 MB, ota_1)
-#   0x8D0000–0xC90000  tiles         (3.75 MB, LittleFS, type 0x83)
+#   0x010000–0x490000  app0          (4.5 MB, ota_0)
+#   0x490000–0x910000  app1          (4.5 MB, ota_1)
+#   0x910000–0xC90000  tiles         (3.5 MB, LittleFS, type 0x83)
 #   0xC90000–0xFF0000  spiffs        (3.375 MB)                       [unchanged]
 #   0xFF0000–0x1000000 coredump      (64 KB)
 
 # Name,   Type, SubType,  Offset,   Size,     Flags
 nvs,      data, nvs,      0x9000,   0x5000,
 otadata,  data, ota,      0xe000,   0x2000,
-app0,     app,  ota_0,    0x10000,  0x460000,
-app1,     app,  ota_1,    0x470000, 0x460000,
-tiles,    data, 0x83,     0x8D0000, 0x3C0000,
+app0,     app,  ota_0,    0x10000,  0x480000,
+app1,     app,  ota_1,    0x490000, 0x480000,
+tiles,    data, 0x83,     0x910000, 0x380000,
 spiffs,   data, spiffs,   0xC90000, 0x360000,
 coredump, data, coredump, 0xFF0000, 0x10000,
