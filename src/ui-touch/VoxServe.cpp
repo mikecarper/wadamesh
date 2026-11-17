@@ -341,6 +341,7 @@ bool VoxServe::sendParity(Job& j, uint32_t now) {
     j.next_at = now + 250;
     return true;
   }
+  j.send_failures = 0;
   sent_total_++;
   j.par_next++;
   j.next_at = now + j.gap;
@@ -461,6 +462,9 @@ void VoxServe::tick() {
     j.next_at = now + 250;
     return;
   }
+  // Failures count in a row: a long answer isn't ended by a few scattered
+  // moments of a full packet pool (as the app's voxSlowConfirmsMax).
+  j.send_failures = 0;
   sent_total_++;
   j.next++;
   if (j.channel >= 0 && !zero_hop) j.answer.add(idx);

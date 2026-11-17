@@ -327,7 +327,10 @@ VoxFetch::Method VoxFetch::choose(Session& s) {
   const bool can_channel = s.channel >= 0;
   // Its packets came 0 hops: whoever sent them is in range, and so may be
   // others holding it. One zero-hop request reaches them all, no route needed.
-  if (s.min_hops == 0 && !s.tried_zero_hop && s.storage && s.asm_.received() > 0) return kZeroHop;
+  // Packets that came by raw data (a zero-hop push, a direct answer) say the
+  // same: ask in range first, the channel's flood only if that fails.
+  if ((s.min_hops == 0 || s.raw_seen) && !s.tried_zero_hop && s.storage && s.asm_.received() > 0)
+    return kZeroHop;
   // Two requests in a row brought nothing: try the channel (anyone holding the
   // photo can answer) before going round the direct options again.
   if (can_channel && s.stalls >= 2 && !s.tried_channel) return kChannel;
@@ -439,6 +442,8 @@ void VoxFetch::onTimeout(Session& s) {
   }
   if (got > s.at_last_attempt) {
     s.stalls = 0;
+    // A zero-hop request that brought packets: keep asking that way.
+    if (s.last == kZeroHop) s.tried_zero_hop = false;
   } else {
     s.stalls++;
     if (s.last != kChannel && s.last != kZeroHop) s.direct_failures++;
@@ -489,6 +494,7 @@ void VoxFetch::onPayload(const uint8_t* data, size_t len, int channel, uint8_t v
   if (s->st == kComplete) return;
   if (relayed) s->relayed = true;
   if (channel >= 0 && hops >= 0 && hops < s->min_hops) s->min_hops = (uint8_t)hops;
+  if (channel < 0) s->raw_seen = true;
   accept(*s, p, via, last_hop, last_hop_len);
 }
 
@@ -567,7 +573,7 @@ void VoxFetch::afterPacket(Session& s, int index, int left) {
       // A marked packet: `left` more of the answer to come. None: it's over and
       // the gaps are final. Else the rest should take that many gaps.
       const uint32_t gap = s.rx_gaps ? s.rx_gap_ms : burstGap(s);
-      arm(s, markedWait(left, gap));
+      arm(s, markedStallWait(left, gap));
       if (left == 0)
         logf("[VOX] fetch %08lx: answer over (marked), %d missing", (unsigned long)s.sid,
              s.asm_.total() - s.asm_.received());
