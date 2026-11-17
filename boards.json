@@ -112,7 +112,7 @@
       "id": "wio-l2",
       "name": "Seeed Wio Tracker L2",
       "chip": "ESP32-S3",
-      "desc": "Touch screen, GPS. Pre-release: still being brought up.",
+      "desc": "Touch screen, GPS, microSD. Sold by Seeed as the SenseCAP Wio Tracker L2 Pro.",
       "boot": "Usually connects on its own. If not: hold the BOOT button while plugging in USB, then release. The first install resizes the app slots, so it has to be this full install once.",
       "notes": "Seeed Wio Tracker L2",
       "base": "wio-tracker-l2",
