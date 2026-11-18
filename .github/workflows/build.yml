@@ -93,6 +93,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
               -o /tmp/test_vox_fec test/test_vox_fec.cpp
           /tmp/test_vox_fec test/data/vox
+      - name: Fast MediaMesh repair packets (VoxFountain, the app's coefficients)
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
+              -o /tmp/test_vox_fountain test/test_vox_fountain.cpp
+          /tmp/test_vox_fountain
       - name: Mesh photo fetch client (simulated mesh and Open TAK sender)
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \

@@ -2778,6 +2778,10 @@ void touchPrefsSetVoiceRecordMode(uint8_t m) {
 }
 bool touchPrefsGetPublicMedia() { if (!s_begun) touchPrefsBegin(); return s_prefs.getUChar("pub_media", 0) != 0; }
 void touchPrefsSetPublicMedia(bool on) { if (!s_begun) touchPrefsBegin(); prefsPutUChar("pub_media", on ? 1 : 0); }
+// Fast MediaMesh (prototype): repair packets and closer spacing. On unless
+// turned off.
+bool touchPrefsGetFastMediaMesh() { if (!s_begun) touchPrefsBegin(); return s_prefs.getUChar("mm_fast", 1) != 0; }
+void touchPrefsSetFastMediaMesh(bool on) { if (!s_begun) touchPrefsBegin(); prefsPutUChar("mm_fast", on ? 1 : 0); }
 bool touchPrefsGetVoiceBrighter() { if (!s_begun) touchPrefsBegin(); return s_prefs.getUChar("vox_bright", 1) != 0; }
 void touchPrefsSetVoiceBrighter(bool on) { if (!s_begun) touchPrefsBegin(); prefsPutUChar("vox_bright", on ? 1 : 0); }
 // On unless turned off: only boards that can play it (CAP_LUA_AUDIO) ask, and the

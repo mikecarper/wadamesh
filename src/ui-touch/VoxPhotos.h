@@ -88,6 +88,11 @@ uint32_t fsChecks();
 // store's index is ready, what isn't known yet counts as not stored. The chat
 // turns it on while it lays out and builds bubbles.
 void setQuick(bool on);
+
+// Fast MediaMesh (prototype): ask for and answer with repair packets
+// (VoxFountain.h), and pace flooded answers closer (FloodPace.h).
+void setFast(bool on);
+bool fast();
 // Moves when answers that change a bubble's height may have changed (the index
 // landed): the open chat is laid out again.
 uint32_t layoutVersion();

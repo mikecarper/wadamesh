@@ -58,6 +58,7 @@ constexpr uint8_t  kFetchFlagMissing  = 0x01;
 constexpr uint8_t  kFetchFlagSaltOk   = 0x02;   // requester takes salted (0x57) resends
 constexpr uint8_t  kFetchFlagHasPath  = 0x04;   // [len][path] follows: requester -> sender route
 constexpr uint8_t  kFetchFlagMarkOk   = 0x08;   // requester reads marked (0x58) packets: channel only
+constexpr uint8_t  kFetchFlagFountainOk = 0x10; // requester rebuilds from repair packets (VoxFountain.h): channel only
 constexpr int      kMaxReplyPathBytes = 8;      // senders ignore longer reply paths
 constexpr uint16_t kChannelDataType   = 0x5643; // 'VC'
 constexpr int      kImageModeId       = 40;
@@ -306,7 +307,7 @@ inline bool parsePacket(const uint8_t* buf, size_t len, Packet* pkt) {
 inline int encodeFetch(uint32_t sid, const uint8_t key6[6], const uint8_t* missing, int n_missing,
                        uint8_t* out, size_t cap, bool salt_ok = false,
                        const uint8_t* reply_path = nullptr, int reply_path_len = 0, int salt = -1,
-                       bool mark_ok = false) {
+                       bool mark_ok = false, bool fountain_ok = false) {
   uint8_t sorted[kMaxPackets];
   int n = 0;
   if (missing) {
@@ -327,7 +328,8 @@ inline int encodeFetch(uint32_t sid, const uint8_t key6[6], const uint8_t* missi
   out[0] = kFetchMagic;
   writeSid(sid, out + 1);
   out[5] = (uint8_t)((missing ? kFetchFlagMissing : 0) | (salt_ok ? kFetchFlagSaltOk : 0) |
-                     (has_path ? kFetchFlagHasPath : 0) | (mark_ok ? kFetchFlagMarkOk : 0));
+                     (has_path ? kFetchFlagHasPath : 0) | (mark_ok ? kFetchFlagMarkOk : 0) |
+                     (fountain_ok ? kFetchFlagFountainOk : 0));
   memcpy(out + 6, key6, 6);
   out[12] = (uint8_t)n;
   if (n) memcpy(out + kFetchMinLen, sorted, (size_t)n);
@@ -405,6 +407,7 @@ struct FetchRequest {
   uint8_t  path[kMaxReplyPathBytes];
   int      path_len = 0;
   bool     mark_ok = false;   // reads marked (0x58) packets
+  bool     fountain_ok = false;   // rebuilds from repair packets (VoxFountain.h)
 };
 
 // Binary request (see encodeFetch). Like the Dart parser it drops indices
@@ -418,6 +421,7 @@ inline bool parseFetch(const uint8_t* buf, size_t len, FetchRequest* r) {
   const int count = buf[12];
   r->salt_ok = (flags & kFetchFlagSaltOk) != 0;
   r->mark_ok = (flags & kFetchFlagMarkOk) != 0;
+  r->fountain_ok = (flags & kFetchFlagFountainOk) != 0;
   if (flags & kFetchFlagMissing) {
     if (len < (size_t)kFetchMinLen + (size_t)count) return false;
     bool seen[kMaxPackets] = {false};

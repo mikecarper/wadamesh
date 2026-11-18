@@ -22,6 +22,7 @@
 
 #include "ui-touch/VoxFec.h"
 #include "ui-touch/VoxServe.h"
+#include "ui-touch/VoxFountain.h"
 
 static int g_fail = 0;
 #define CHECK(cond, ...)                                    \
@@ -680,6 +681,66 @@ void testParsers() {
   CHECK(!VoxWire::encodeVoiceEnvelope(kSid, 32, 10, 10, env, sizeof env), "never a VE3 envelope for Mimi");
 }
 
+
+// Fast MediaMesh (prototype): a channel request that takes repair packets
+// (flag 0x10) and lacks 4 gets fresh repair packets (VoxFountain.h), enough
+// with a margin, which rebuild exactly what it lacks; none of the 4 packets
+// themselves. Without the setting, the packets as before.
+void testFastRepairAnswer() {
+  Sim sim;
+  VoxServe s(sim);
+  s.setFast(true);
+  const std::vector<uint8_t> bits = clip1200(1000);   // 7 packets, the last 64 bytes
+  sim.clips[kSid] = {1, bits};
+  s.markOwn(kSid);
+  const uint8_t miss[4] = {1, 2, 4, 6};
+  uint8_t req[64];
+  const int n = VoxWire::encodeFetch(kSid, kKeyA, miss, 4, req, sizeof req, true, nullptr, 0, 3, true, true);
+  CHECK(n > 0 && (req[5] & VoxWire::kFetchFlagFountainOk), "the request says it takes repair packets");
+  VoxWire::FetchRequest fr;
+  CHECK(VoxWire::parseFetch(req, (size_t)n, &fr) && fr.fountain_ok, "parsed back");
+  s.onPayload(req, (size_t)n, 3, 1);
+  sim.run(s, 60000);
+  const int want = VoxFountain::needed(4);
+  CHECK((int)sim.sent.size() == want, "sent %zu, want %d repair packets", sim.sent.size(), want);
+  // A listener holding 0, 3, 5 rebuilds 1, 2, 4, 6 from them.
+  std::vector<uint8_t> buf(7 * 156, 0);
+  bool have[7] = {true, false, false, true, false, true, false};
+  for (int i = 0; i < 7; i++)
+    if (have[i]) memcpy(buf.data() + i * 156, bits.data() + i * 156, i == 6 ? 64 : 156);
+  std::vector<VoxFountain::Repair> rep;
+  for (auto& p : sim.sent) {
+    VoxWire::Packet pk;
+    CHECK(VoxWire::parsePacket(p.data.data(), p.data.size(), &pk), "parses");
+    CHECK(pk.sid == VoxFountain::repairSid(kSid), "a repair packet's session id");
+    CHECK(p.data.size() <= 163, "GRP_DATA limit");
+    rep.push_back(VoxFountain::Repair{pk.index, (uint8_t)pk.len, pk.data});
+  }
+  std::vector<uint8_t> out(7 * 156, 0);
+  const int got = VoxFountain::rebuild(
+      7, 156, buf.data(), [&](int i) { return have[i]; }, rep.data(), (int)rep.size(),
+      [&](int i, const uint8_t* d, int len) { memcpy(out.data() + i * 156, d, (size_t)len); });
+  CHECK(got == 4, "rebuilt %d", got);
+  for (int i : {1, 2, 4, 6})
+    CHECK(memcmp(out.data() + i * 156, bits.data() + i * 156, i == 6 ? 64 : 156) == 0, "packet %d", i);
+  // Seeds all differ (a radio drops a repeat).
+  for (size_t a = 0; a < rep.size(); a++)
+    for (size_t b = a + 1; b < rep.size(); b++) CHECK(rep[a].seed != rep[b].seed, "seed %zu/%zu", a, b);
+
+  // Setting off: the 4 packets themselves.
+  Sim old;
+  VoxServe o(old);
+  old.clips[kSid] = {1, bits};
+  o.markOwn(kSid);
+  o.onPayload(req, (size_t)n, 3, 1);
+  old.run(o, 60000);
+  CHECK(old.sent.size() == 4, "off: sent %zu", old.sent.size());
+
+  // Fast pace: closer than the base gap, never under the fast floor.
+  floodpace::Pace fast(338, true), slow(338);
+  CHECK(fast.gapMs(1) < slow.gapMs(1), "fast %u < slow %u", fast.gapMs(1), slow.gapMs(1));
+  CHECK(fast.gapMs(3) == floodpace::fastBaseGapMs(338), "fast floor for any hops");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -699,6 +760,7 @@ int main(int argc, char** argv) {
   testFloodPace();
   testChannelPaceLearns();
   testMarkedChannelAnswer();
+  testFastRepairAnswer();
   testDuplicateIgnored();
   testNewerRequestReplaces();
   testQueuedListeners();

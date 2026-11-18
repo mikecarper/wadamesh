@@ -19588,8 +19588,23 @@ static void buildPublicMediaCard() {
                publicMediaAllowed(), publicMediaToggleCb);
   setNote(c, "Only switch this on in an emergency.", SET_TONE_DANGER);
 }
+// Fast MediaMesh (prototype): repair packets that mend every listener's gaps
+// at once (VoxFountain.h), and closer spacing through repeaters.
+static void fastMediaMeshToggleCb(lv_event_t* e) {
+  const bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  touchPrefsSetFastMediaMesh(on);
+  VoxPhotos::setFast(on);
+}
+static void buildFastMediaMeshCard() {
+  lv_obj_t* c = setCard("Fast MediaMesh (prototype)");
+  setSwitchRow(c, "Fast MediaMesh",
+               "Repair packets that mend any listener's gaps at once, and closer packet spacing through "
+               "repeaters. Every standalone and phone in a test needs the prototype; switch off to compare.",
+               VoxPhotos::fast(), fastMediaMeshToggleCb);
+}
 static void buildMediaMeshCard() {
   buildMediaMeshRadioCards();
+  buildFastMediaMeshCard();
   buildPublicMediaCard();
 }
 static void buildMediaMeshRadioCards() {
@@ -93644,6 +93659,7 @@ void UITask::loop() {
 #endif
       if (in_ok) {
         VoxPhotos::setStore(in);
+        VoxPhotos::setFast(touchPrefsGetFastMediaMesh());   // Fast MediaMesh (prototype)
         // When internal storage is full (settings, chat history and OTP pads
         // share it), photos and clips go on the SD card instead: a Super Sharp
         // photo on a ThinkNode M9 downloaded fully, then "couldn't store it".

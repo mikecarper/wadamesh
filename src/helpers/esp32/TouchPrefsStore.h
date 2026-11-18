@@ -593,6 +593,8 @@ void    touchPrefsSetVoiceRecordMode(uint8_t wire_mode);
  *  Public and #public (PublicMedia.h). Default off: only in an emergency. */
 bool    touchPrefsGetPublicMedia();
 void    touchPrefsSetPublicMedia(bool on);
+bool    touchPrefsGetFastMediaMesh();
+void    touchPrefsSetFastMediaMesh(bool on);
 /** "Brighter voice": play Codec2 at 16 kHz with the 4-8 kHz band filled in
  *  (VoxBrighten). Default on. */
 bool    touchPrefsGetVoiceBrighter();

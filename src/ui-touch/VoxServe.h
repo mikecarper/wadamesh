@@ -91,6 +91,12 @@ class VoxServe {
 
   void tick();
 
+  // Fast MediaMesh (prototype): answer listeners that take repair packets
+  // (VoxFountain.h) with fresh repair packets instead of the packets they
+  // lack, and pace flooded answers by FloodPace's fast gap.
+  void setFast(bool on) { fast_ = on; }
+  bool fast() const { return fast_; }
+
   // For the UI and tests.
   bool busy() const { return active_ >= 0 || queued_ > 0; }
   int packetsSent() const { return sent_total_; }
@@ -135,6 +141,10 @@ class VoxServe {
     floodpace::Answer answer;      // flooded data packets sent, for FloodPace
     bool mark_ok = false;          // everyone asking reads marked (0x58) packets
     uint32_t first_sent_ms = 0;    // when its first packet went (the log's timing)
+    // Fast MediaMesh: repair packets still to send (VoxFountain.h), after
+    // the data; and a first pass ending with them instead of parity.
+    int repairs = 0;
+    bool repair_first = false;
   };
   struct PaceRec { bool used = false; int channel = -1; floodpace::Pace pace; };
   struct AnswerRec { uint32_t sid = 0; int channel = -1; floodpace::Answer answer; };
@@ -166,6 +176,13 @@ class VoxServe {
   void logf(const char* fmt, ...);
   bool heardSince(uint32_t sid, int index, uint32_t t) const;
   bool sendParity(Job& j, uint32_t now);
+  bool sendRepair(Job& j, uint32_t now);
+
+  bool fast_ = false;   // VoxPhotos::setFast turns it on from the setting
+  // The next repair seed for the clip last answered with repair packets, so
+  // no two of ours are the same (radios drop repeats).
+  uint32_t repair_sid_ = 0;
+  int repair_next_ = 0;
 
   VoxServeIo& io_;
   Job jobs_[kMaxQueued];

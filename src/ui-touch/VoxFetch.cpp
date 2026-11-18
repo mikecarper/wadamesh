@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "VoxFetch.h"
 
+#include "VoxFountain.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include "FloodPace.h"
@@ -59,6 +61,9 @@ void VoxFetch::release(Session& s) {
   free(s.parity);
   s.parity = nullptr;
   s.n_parity = 0;
+  free(s.repairs);
+  s.repairs = nullptr;
+  s.n_repairs = 0;
   s.used = false;
 }
 
@@ -412,7 +417,8 @@ void VoxFetch::attempt(Session& s) {
   } else {
     uint8_t req[VoxWire::kFetchMinLen + VoxWire::kMaxFetchIndices];
     const int n = VoxWire::encodeFetch(s.sid, key6, any ? missing : nullptr, n_missing, req, sizeof req, true,
-                                       nullptr, 0, salt, true);   // on a channel: we read marked answers
+                                       nullptr, 0, salt, true,   // on a channel: we read marked answers
+                                       fast_);                   // and repair packets (Fast MediaMesh)
     sent = n > 0 && io_.sendChannelData(s.channel, VoxWire::kChannelDataType, req, (size_t)n);
   }
 
@@ -507,6 +513,12 @@ void VoxFetch::onPayload(const uint8_t* data, size_t len, int channel, uint8_t v
       if (ps->st != kComplete) acceptParity(*ps, p);
       return;
     }
+    // A repair packet (VoxFountain.h): XORed another way.
+    Session* rs = find(VoxFountain::repairSid(p.sid));
+    if (rs) {
+      if (rs->st != kComplete) acceptRepair(*rs, p);
+      return;
+    }
     keepOrphan(p, via, relayed, last_hop, last_hop_len);
     return;
   }
@@ -555,6 +567,50 @@ bool VoxFetch::rebuildFromParity(Session& s) {
   return true;
 }
 
+void VoxFetch::acceptRepair(Session& s, const VoxWire::Packet& p) {
+  if (p.len < 2 || p.len > 1 + VoxFountain::kMaxP) return;
+  constexpr int kEntry = 2 + 1 + VoxFountain::kMaxP;   // [seed][len][data]
+  if (!s.repairs) {
+    s.repairs = (uint8_t*)malloc((size_t)kMaxRepairs * kEntry);   // ~19 KB: PSRAM on the device
+    if (!s.repairs) return;
+  }
+  for (int k = 0; k < s.n_repairs; k++)
+    if (s.repairs[k * kEntry] == p.index) return;   // have it
+  if (s.n_repairs >= kMaxRepairs) return;
+  uint8_t* e = s.repairs + (size_t)s.n_repairs * kEntry;
+  e[0] = p.index;
+  e[1] = (uint8_t)p.len;
+  memcpy(e + 2, p.data, (size_t)p.len);
+  s.n_repairs++;
+  s.heard_ms = io_.nowMs();
+  if (!s.storage || s.asm_.received() == 0) return;
+  const bool rebuilt = rebuildFromRepairs(s);
+  // Part of the answer: keep its timers going (index -1: not a new packet),
+  // and complete when the rebuild finished it.
+  if (rebuilt || s.st == kRequesting || s.st == kReceiving) afterPacket(s, -1);
+}
+
+bool VoxFetch::rebuildFromRepairs(Session& s) {
+  if (!s.repairs || !s.n_repairs || !s.storage || s.asm_.complete()) return false;
+  if (s.n_repairs < s.total - s.asm_.received()) return false;
+  constexpr int kEntry = 2 + 1 + VoxFountain::kMaxP;
+  VoxFountain::Repair* rep = (VoxFountain::Repair*)malloc(sizeof(VoxFountain::Repair) * (size_t)s.n_repairs);
+  if (!rep) return false;
+  for (int k = 0; k < s.n_repairs; k++) {
+    const uint8_t* e = s.repairs + (size_t)k * kEntry;
+    rep[k] = VoxFountain::Repair{e[0], e[1], e + 2};
+  }
+  const int n = VoxFountain::rebuild(
+      s.total, s.packet_bytes, s.asm_.payload(), [&](int i) { return s.asm_.have((uint8_t)i); }, rep, s.n_repairs,
+      [&](int i, const uint8_t* d, int len) { s.asm_.add(VoxWire::Packet{s.sid, (uint8_t)i, d, len, false, 0}); });
+  free(rep);
+  if (n <= 0) return false;
+  s.rebuilt = (uint8_t)(s.rebuilt + n > 255 ? 255 : s.rebuilt + n);
+  logf("[VOX] fetch %08lx: rebuilt %d packets from %d repair packets (fast repair)", (unsigned long)s.sid, n,
+       s.n_repairs);
+  return true;
+}
+
 void VoxFetch::accept(Session& s, const VoxWire::Packet& p, uint8_t via, const uint8_t* hop, uint8_t hop_len) {
   if (!ensureStorage(s)) return;
   if (!s.asm_.add(p)) return;
@@ -566,6 +622,7 @@ void VoxFetch::accept(Session& s, const VoxWire::Packet& p, uint8_t via, const u
     if (s.r2_hop_len) memcpy(s.r2_hop, hop, s.r2_hop_len);
   }
   if (s.n_parity) rebuildFromParity(s);
+  if (s.n_repairs) rebuildFromRepairs(s);
   afterPacket(s, p.index, p.marked ? p.left : -1);
 }
 
@@ -627,6 +684,9 @@ void VoxFetch::complete(Session& s) {
   free(s.parity);
   s.parity = nullptr;
   s.n_parity = 0;
+  free(s.repairs);
+  s.repairs = nullptr;
+  s.n_repairs = 0;
   s.asm_ = VoxWire::Assembly{};
   io_.changed(s.sid);
 }
