@@ -71,7 +71,7 @@ listening, in about 20 more seconds:
    packets were heard on radio2, the 250 kHz preset is offered.
 
 It needs a MediaMesh repeater in direct range. Repeaters answer at most four
-discovery requests every two minutes (asking uses one, listening two more), so
+discovery requests every two minutes (asking uses one, listening one more), so
 running it again right away may find nothing. It refuses while Client Repeat is
 on, and the listening fallback won't run while a temporary radio2 runs.
 MeshCore Open TAK has the same button in its MediaMesh settings.
