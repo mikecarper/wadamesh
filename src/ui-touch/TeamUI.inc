@@ -1762,6 +1762,7 @@ namespace teamui {
 static lv_obj_t* s_root = nullptr;
 static lv_obj_t* s_body = nullptr;
 static int s_tab = 0;   // 0 team, 1 pins, 2 setup, 3 watch
+static bool s_show_lost = false;   // the team list's "Not heard lately" opened
 static lv_timer_t* s_page_timer = nullptr;
 
 static void pageBuild();
@@ -1880,9 +1881,26 @@ static void buildTeam(lv_obj_t* b) {
   for (int i = 1; i < n; i++)
     for (int j = i; j > 0 && dist[order[j]] < dist[order[j - 1]]; j--) { int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t; }
   if (!n && c->cfg.enabled) lbl(b, TR("No teammates heard yet."), &g_font_12, COLOR_SUB);
+  // Live and stale teammates first; lost ones (over an hour, already off the
+  // map) under "Not heard lately", collapsed. As the app's team list.
+  int n_lost = 0;
+  for (int k = 0; k < n; k++)
+    if (c->freshness(*c->member(order[k])) == team::Fresh::Lost) n_lost++;
+  for (int pass = 0; pass < 2; pass++) {
+    if (pass == 1) {
+      if (!n_lost) break;
+      snprintf(line, sizeof line, "%s %s (%d)", s_show_lost ? LV_SYMBOL_DOWN : LV_SYMBOL_RIGHT,
+               TR("Not heard lately"), n_lost);
+      lv_obj_t* t = rowCard(b, [](lv_event_t*) { s_show_lost = !s_show_lost; pageBuild(); }, nullptr);
+      lbl(t, line, &g_font_14, COLOR_SUB);
+      lbl(t, TR("Over an hour since their last beacon. Off the map until they're heard again."), &g_font_12,
+          COLOR_SUB);
+      if (!s_show_lost) break;
+    }
   for (int k = 0; k < n; k++) {
     team::Member* m = c->member(order[k]);
     const team::Fresh fr = c->freshness(*m);
+    if ((fr == team::Fresh::Lost) != (pass == 1)) continue;
     lv_obj_t* card = rowCard(b, [](lv_event_t* e) { memberSheet((int)(intptr_t)lv_event_get_user_data(e)); },
                              (void*)(intptr_t)order[k]);
     lv_obj_set_style_border_color(card, lv_color_hex(TeamWire::colorRgb(m->pos.color)), LV_PART_MAIN);
@@ -1898,6 +1916,7 @@ static void buildTeam(lv_obj_t* b) {
              TeamWire::statusName(m->pos.status), (unsigned long)ago, batt,
              fr == team::Fresh::Live ? "" : fr == team::Fresh::Stale ? " · stale" : " · lost");
     lbl(card, line, &g_font_12, COLOR_SUB);
+  }
   }
 }
 
