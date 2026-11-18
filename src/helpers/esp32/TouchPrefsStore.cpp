@@ -2778,7 +2778,7 @@ void touchPrefsSetVoiceRecordMode(uint8_t m) {
 }
 bool touchPrefsGetPublicMedia() { if (!s_begun) touchPrefsBegin(); return s_prefs.getUChar("pub_media", 0) != 0; }
 void touchPrefsSetPublicMedia(bool on) { if (!s_begun) touchPrefsBegin(); prefsPutUChar("pub_media", on ? 1 : 0); }
-// Fast MediaMesh (prototype): repair packets and closer spacing. On unless
+// Fast MediaMesh: repair packets and closer spacing. On unless
 // turned off.
 bool touchPrefsGetFastMediaMesh() { if (!s_begun) touchPrefsBegin(); return s_prefs.getUChar("mm_fast", 1) != 0; }
 void touchPrefsSetFastMediaMesh(bool on) { if (!s_begun) touchPrefsBegin(); prefsPutUChar("mm_fast", on ? 1 : 0); }

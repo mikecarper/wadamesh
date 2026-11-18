@@ -91,7 +91,7 @@ class VoxServe {
 
   void tick();
 
-  // Fast MediaMesh (prototype): answer listeners that take repair packets
+  // Fast MediaMesh: answer listeners that take repair packets
   // (VoxFountain.h) with fresh repair packets instead of the packets they
   // lack, and pace flooded answers by FloodPace's fast gap.
   void setFast(bool on) { fast_ = on; }

@@ -60,7 +60,7 @@ class VoxFetchIo {
 
 class VoxFetch {
  public:
-  // Fast MediaMesh (prototype): say on channel requests that we rebuild from
+  // Fast MediaMesh: say on channel requests that we rebuild from
   // repair packets (VoxFountain.h). Repair packets heard are used either way.
   void setFast(bool on) { fast_ = on; }
   bool fast() const { return fast_; }

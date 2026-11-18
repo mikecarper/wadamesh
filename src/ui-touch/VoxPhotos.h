@@ -89,7 +89,7 @@ uint32_t fsChecks();
 // turns it on while it lays out and builds bubbles.
 void setQuick(bool on);
 
-// Fast MediaMesh (prototype): ask for and answer with repair packets
+// Fast MediaMesh: ask for and answer with repair packets
 // (VoxFountain.h), and pace flooded answers closer (FloodPace.h).
 void setFast(bool on);
 bool fast();

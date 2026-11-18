@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// Rateless repair packets for MediaMesh transfers (prototype), as the app
+// Rateless repair packets for MediaMesh transfers, as the app
 // does them (lib/vox/vox_fountain.dart in jade-on-mesh/meshcore-open-tak; its
 // scripts/vox/fountain_ref.py is the reference both are checked against).
 //
