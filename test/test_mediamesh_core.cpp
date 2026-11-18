@@ -746,9 +746,8 @@ static void testSwitchTimes() {
 static void testFind() {
   assert(findPick(0, 0) == -1);
   assert(findPick(3, 0) == 0);
-  assert(findPick(0, 2) == 1);
-  assert(findPick(1, 5) == 1);
-  assert(findPick(4, 4) == 0);   // a tie: the fast preset
+  assert(findPick(0, 2) == -1);   // 125 kHz isn't listened on any more
+  assert(findPick(1, 5) == 0);
 }
 
 // The same golden bytes as MeshCore Open TAK's test/connector/discover_radio2_test.dart.

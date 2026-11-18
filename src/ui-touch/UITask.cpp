@@ -19084,7 +19084,7 @@ static void mediaMeshInfoRefresh() {
 // ---- radio2 card: the second profile (MEDIAMESH.md) ----------------------------
 static lv_obj_t* s_mm_mode_row = nullptr;   // Off / On (On: listen and send)
 static lv_obj_t* s_mm_use_row = nullptr;    // Photos & voice / Everything / Custom
-static lv_obj_t* s_mm_preset_row = nullptr; // 250 kHz fast / 125 kHz range
+static lv_obj_t* s_mm_preset_row = nullptr; // 250 kHz fast / 2.4 GHz
 
 // The listed community mesh (k_mesh_radio_presets) whose channel radio2's would
 // overlap, or nullptr: radio2 must never sit on a community mesh.
@@ -19096,13 +19096,15 @@ static const char* mmConflictingMesh(const mediamesh::Params& p) {
   return nullptr;
 }
 
+// The preset row's choice: 0 the 250 kHz preset, 1 2.4 GHz (LR1121 / LR2021),
+// -1 anything else (custom). The 125 kHz range preset is no longer offered:
+// nobody used it and it confused people; a radio still on it shows as custom.
 static int mmPresetIndex(const mediamesh::Config& c) {
   if (c.p.cr != 5) return -1;
   if (mediamesh::is24GHz(c.p.freq))
-    return std::fabs(c.p.bw - mediamesh::k24Bw) < 0.01f && c.p.sf == mediamesh::k24Sf ? 2 : -1;
+    return std::fabs(c.p.bw - mediamesh::k24Bw) < 0.01f && c.p.sf == mediamesh::k24Sf ? 1 : -1;
   if (c.p.sf != 7) return -1;
   if (std::fabs(c.p.bw - mediamesh::kDefaultBw) < 0.01f) return 0;
-  if (std::fabs(c.p.bw - mediamesh::kRangeBw) < 0.01f) return 1;
   return -1;
 }
 static lv_obj_t* s_mm_share_row = nullptr;  // main-mesh nodes: MediaMesh only / Share with them
@@ -19181,7 +19183,7 @@ static void mmPresetCb(lv_event_t* e) {
   const int i = setChoiceIndex(e);
   mediamesh::Config c = mediamesh::config();
   mediamesh::Params p = c.p;
-  if (i == 2 && mediamesh::has24GHz()) {
+  if (i == 1 && mediamesh::has24GHz()) {
     // 2.4 GHz, balanced for speed and distance: its own frequency, width and SF.
     p.freq = mediamesh::k24Freq;
     p.bw = mediamesh::k24Bw;
@@ -19189,7 +19191,7 @@ static void mmPresetCb(lv_event_t* e) {
   } else {
     // Back from 2.4 GHz: the sub-GHz default frequency; else the frequency stays.
     if (mediamesh::is24GHz(p.freq)) p.freq = mediamesh::kDefaultFreq;
-    p.bw = i == 1 ? mediamesh::kRangeBw : mediamesh::kDefaultBw;
+    p.bw = mediamesh::kDefaultBw;
     p.sf = 7;
   }
   p.cr = 5;
@@ -19216,10 +19218,7 @@ static void mmPresetCb(lv_event_t* e) {
   setChoicePick(s_mm_preset_row, mmPresetIndex(c));
   mediaMeshInfoRefresh();
   if (g_lv.task) {
-    g_lv.task->showAlert(i == 2   ? TR("radio2: 2.4 GHz")
-                         : i == 1 ? TR("radio2: 125 kHz range")
-                                  : TR("radio2: 250 kHz fast"),
-                         1300);
+    g_lv.task->showAlert(i == 1 ? TR("radio2: 2.4 GHz") : TR("radio2: 250 kHz fast"), 1300);
   }
 }
 
@@ -19307,8 +19306,8 @@ static void mmFindStatus(const char* text) {
 static bool mmFindTune(int preset) {
   s_mm_find_tuned = true;
   char cmd[96];
-  snprintf(cmd, sizeof cmd, "set tempradio2 %.3f,%g,7,5,rx,2", s_mm_find_freq,
-           preset ? mediamesh::kRangeBw : mediamesh::kDefaultBw);
+  (void)preset;  // only the 250 kHz preset is listened on now
+  snprintf(cmd, sizeof cmd, "set tempradio2 %.3f,%g,7,5,rx,2", s_mm_find_freq, mediamesh::kDefaultBw);
   char reply[160];
   return mediamesh::runCli(cmd, reply, sizeof reply) && strncmp(reply, "OK", 2) == 0;
 }
@@ -19343,8 +19342,7 @@ static void mmFindApply(float freq, float bw, uint8_t sf, uint8_t cr, const char
 
 static void mmFindUse() {   // the listening fallback's preset
   if (s_mm_find_pick < 0) return;
-  mmFindApply(s_mm_find_freq, s_mm_find_pick ? mediamesh::kRangeBw : mediamesh::kDefaultBw, 7, 5,
-              s_mm_find_pick ? TR("radio2: 125 kHz range") : TR("radio2: 250 kHz fast"));
+  mmFindApply(s_mm_find_freq, mediamesh::kDefaultBw, 7, 5, TR("radio2: 250 kHz fast"));
 }
 
 static void mmFindUseProfile() {   // what the repeaters reported
@@ -19374,19 +19372,18 @@ static void mmFindEnd(const char* why) {
   }
   s_mm_find_pick = mediamesh::findPick(s_mm_find_heard[0], s_mm_find_heard[1]);
   char line[96];
-  snprintf(line, sizeof line, "250 kHz: %lu, 125 kHz: %lu %s", (unsigned long)s_mm_find_heard[0],
-           (unsigned long)s_mm_find_heard[1], TR("heard"));
+  snprintf(line, sizeof line, "250 kHz: %lu %s", (unsigned long)s_mm_find_heard[0], TR("heard"));
   mmFindStatus(line);
   static char msg[220];
   if (s_mm_find_pick < 0) {
-    snprintf(msg, sizeof msg, "%s %.3f MHz. %s", TR("No MediaMesh answered on 250 or 125 kHz at"), s_mm_find_freq,
+    snprintf(msg, sizeof msg, "%s %.3f MHz. %s", TR("No MediaMesh answered on 250 kHz at"), s_mm_find_freq,
              s_mm_find_answers ? TR("Repeaters nearby answered on the main mesh, but none on radio2.")
                                : TR("No repeaters answered at all (out of range, or asked too often: try in 2 minutes)."));
     if (g_lv.task) g_lv.task->showAlert(msg, 4000);
     return;
   }
   snprintf(msg, sizeof msg, "%s %s (%lu %s). %s", TR("MediaMesh found:"),
-           s_mm_find_pick ? TR("125 kHz range") : TR("250 kHz fast"),
+           TR("250 kHz fast"),
            (unsigned long)s_mm_find_heard[s_mm_find_pick], TR("packets heard"), TR("Use this preset?"));
   showConfirm(msg, TR("Use it"), mmFindUse);
 }
@@ -19462,7 +19459,7 @@ static void mmFindTimerCb(lv_timer_t*) {
     if (mediamesh::status().temp2) { mmFindEnd(TR("No repeater said. Stop the temporary radio2 to listen instead.")); return; }
     the_mesh.discoverClear();
     if (!mmFindTune(0)) { mmFindEnd(TR("The radio refused the 250 kHz preset")); return; }
-    mmFindStatus(TR("Listening on 250 kHz (1/2)..."));
+    mmFindStatus(TR("Listening on 250 kHz..."));
     s_mm_find_phase = 0;
     s_mm_find_until = now + mediamesh::kFindSettleMs;
     return;
@@ -19480,12 +19477,8 @@ static void mmFindTimerCb(lv_timer_t*) {
     if (the_mesh.discoverGet((uint8_t)i, h) && h.node_type == ADV_TYPE_REPEATER && s_mm_find_answers < 255) s_mm_find_answers++;
   }
   the_mesh.discoverClear();
-  if (s_mm_find_preset == 1) { mmFindEnd(nullptr); return; }
-  s_mm_find_preset = 1;
-  if (!mmFindTune(1)) { mmFindEnd(TR("The radio refused the 125 kHz preset")); return; }
-  mmFindStatus(TR("Listening on 125 kHz (2/2)..."));
-  s_mm_find_phase = 0;
-  s_mm_find_until = now + mediamesh::kFindSettleMs;
+  // The 250 kHz preset is the only one now: done.
+  mmFindEnd(nullptr);
 }
 
 static void mmFindCb(lv_event_t* e) {
@@ -19644,19 +19637,17 @@ static void buildMediaMeshRadioCards() {
   }
   if (mediamesh::has24GHz()) {
     // LR1121 / LR2021: radio2 can also be 2.4 GHz LoRa, off the 900 MHz band.
-    const char* opts[3] = { TR("250 kHz fast"), TR("125 kHz range"), TR("2.4 GHz") };
+    const char* opts[2] = { TR("250 kHz fast"), TR("2.4 GHz") };
     s_mm_preset_row = setChoiceRow(c, "Preset",
-                                   "250 kHz sends photos and voice about twice as fast; 125 kHz reaches about 40% "
-                                   "farther (both SF7). 2.4 GHz moves radio2 off the 900 MHz band at about the "
-                                   "250 kHz preset's speed (406 kHz SF8), with less range; only LR1121 and "
-                                   "LR2021 radios can join it. CR 4/5. Everyone on radio2 must use the same.",
-                                   opts, 3, mmPresetIndex(cfg), mmPresetCb);
-  } else {
-    const char* opts[2] = { TR("250 kHz fast"), TR("125 kHz range") };
-    s_mm_preset_row = setChoiceRow(c, "Preset",
-                                   "250 kHz sends photos and voice about twice as fast; 125 kHz reaches about 40% "
-                                   "farther. Both SF7, CR 4/5. Everyone on radio2 must use the same.",
+                                   "250 kHz SF7 is MediaMesh's preset. 2.4 GHz moves radio2 off the 900 MHz band "
+                                   "at about its speed (406 kHz SF8), with less range; only LR1121 and LR2021 "
+                                   "radios can join it. CR 4/5. Everyone on radio2 must use the same.",
                                    opts, 2, mmPresetIndex(cfg), mmPresetCb);
+  } else {
+    const char* opts[1] = { TR("250 kHz fast") };
+    s_mm_preset_row = setChoiceRow(c, "Preset",
+                                   "MediaMesh's preset: 250 kHz, SF7, CR 4/5. Everyone on radio2 must use the same.",
+                                   opts, 1, mmPresetIndex(cfg), mmPresetCb);
   }
   setSwitchRow(c, "Repeat MediaMesh",
                "Relay what this radio hears on radio2, on radio2, like a MediaMesh repeater. Main-mesh "
@@ -19665,8 +19656,8 @@ static void buildMediaMeshRadioCards() {
   s_mm_find_btn = setButton(c, LV_SYMBOL_GPS, "Find MediaMesh", mmFindCb);
   if (s_mm_find_timer) lv_obj_add_state(s_mm_find_btn, LV_STATE_DISABLED);
   s_mm_find_val = setInfoRow(c, "Found", s_mm_find_timer ? TR("Listening...") : "");
-  setNote(c, "Find MediaMesh listens on each preset for about 10 s while nearby repeaters are asked to answer. "
-             "MediaMesh repeaters answer on radio2 too, so the preset they're heard on is the one in use here.");
+  setNote(c, "Find MediaMesh asks nearby repeaters for their radio2 settings. When none say, it listens on the "
+             "250 kHz preset for about 10 s while they're asked to answer: MediaMesh repeaters answer on radio2 too.");
   mmcovBuildRows(c);   // Map coverage (MediaMeshCoverageUI.inc)
   lv_obj_t* r1 = setFieldRow(c);
   s_mm_freq_ta = setField(r1, "Frequency (MHz)", "MHz", 15, setFieldW(2));

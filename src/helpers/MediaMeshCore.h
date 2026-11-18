@@ -159,11 +159,12 @@ inline bool has24GHz() {
 // MeshCore Open TAK (lib/services/media_mesh_find.dart).
 static constexpr uint32_t kFindSettleMs = 1500;   // after the retune, before asking
 static constexpr uint32_t kFindListenMs = 9000;   // repeaters answer after a random delay (x4)
-// 0: 250 kHz fast, 1: 125 kHz range, -1: nothing heard on either. A tie goes
-// to the fast preset.
+// 0: the 250 kHz preset was heard, -1: nothing heard. The 125 kHz range
+// preset is no longer offered or listened on; heard_range is kept for the
+// shape of the call (as the app's mediaMeshFindPick).
 inline int findPick(uint32_t heard_fast, uint32_t heard_range) {
-  if (!heard_fast && !heard_range) return -1;
-  return heard_range > heard_fast ? 1 : 0;
+  (void)heard_range;
+  return heard_fast ? 0 : -1;
 }
 
 // ---- Find MediaMesh by asking ------------------------------------------------------

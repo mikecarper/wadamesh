@@ -27,9 +27,11 @@ The **radio2 (MediaMesh)** card:
   Any other mix shows *Custom*; set `tx.media` in the Terminal. Turning radio2
   on or applying a preset always sets `radio2.cross off`: the two meshes are
   never bridged from the settings pages.
-- **Preset**: *250 kHz fast* (the default) or *125 kHz range*. Picking one
-  fills in bandwidth, SF7 and CR 4/5 and leaves the frequency alone; it shows
-  as picked whenever the fields match one.
+- **Preset**: *250 kHz fast* (plus *2.4 GHz* on LR1121 / LR2021 radios).
+  Picking it fills in bandwidth, SF7 and CR 4/5 and leaves the frequency alone;
+  it shows as picked whenever the fields match. The old *125 kHz range* preset
+  is gone (it confused people and nobody used it); a radio2 still on 125 kHz
+  shows as custom and keeps working.
 - **Find MediaMesh**: finds the radio2 profile the MediaMesh here uses (below).
 - **Frequency, Bandwidth, SF, CR**: the radio2 profile. A field applies when you
   leave it. It must differ from the main radio and stay clear of every listed
@@ -65,9 +67,8 @@ listening, in about 20 more seconds:
 2. A repeater discovery request goes out on the main mesh. MediaMesh repeaters
    (keymindCascade, `tx.reply both`) answer on both of their radios, so their
    radio2 answer is only heard if this standalone listens on the same preset.
-3. After about 9 seconds, the same on 125 kHz.
-4. `set tempradio2 off` puts the saved radio2 back. The preset that heard
-   packets on radio2 is offered (a tie goes to 250 kHz).
+3. After about 9 seconds, `set tempradio2 off` puts the saved radio2 back. If
+   packets were heard on radio2, the 250 kHz preset is offered.
 
 It needs a MediaMesh repeater in direct range. Repeaters answer at most four
 discovery requests every two minutes (asking uses one, listening two more), so
@@ -114,10 +115,7 @@ turns bridging off once, saved and held alike, whatever it was; `set
 radio2.cross on|auto` from the Terminal afterwards is kept.
 
 Default settings: 911.150 MHz, 250 kHz, SF7, CR 4/5 (the *250 kHz fast* preset).
-That is about 4× faster than SF7/62.5 for roughly 6 dB less range. Where that
-falls short of the main mesh's reach, the *125 kHz range* preset is about half
-the speed and roughly 40% farther (about 2× faster than SF7/62.5 for ~3 dB less
-range). 911.150 is a quiet spot found on site, inside a BayMesh 3 cavity
+That is about 4× faster than SF7/62.5 for roughly 6 dB less range. 911.150 is a quiet spot found on site, inside a BayMesh 3 cavity
 filter tuned for 910.525 (flat about 908.6–912.8 MHz) and 625 kHz above the main
 channel (the channels' edges about 530 kHz apart). Everyone exchanging
 media has to use the same settings. Radios already set up keep their own.
@@ -384,9 +382,8 @@ dark.
 
 ### Presets and community meshes
 
-MediaMesh Settings offers two presets, each SF7, CR 4/5 at 911.150 MHz:
-**250 kHz fast** (the default for a new radio2) and **125 kHz range** (half
-the speed, about 40% farther). A radio2 channel that would overlap any listed
+MediaMesh Settings offers one sub-GHz preset: **250 kHz fast**, SF7, CR 4/5 at
+911.150 MHz (the default for a new radio2). A radio2 channel that would overlap any listed
 community mesh preset is refused on the device with "Conflicts with <preset>".
 
 ### Photos and voice stay off the main mesh
@@ -545,7 +542,7 @@ do LoRa at 2.4 GHz, so their radio2 can leave the 900 MHz band altogether.
 Settings → MediaMesh → **Preset** has a third choice there, **2.4 GHz**,
 balanced for speed and distance: 2424.5 MHz (between Wi-Fi channels 1 and 6),
 406.25 kHz, SF8, CR 4/5. Or type any 2400-2500 MHz frequency with a 203.125,
-406.25 or 812.5 kHz width (`set radio2 2424.5,406.25,8,5,rxtx`). Picking 250 or 125 kHz again puts radio2
+406.25 or 812.5 kHz width (`set radio2 2424.5,406.25,8,5,rxtx`). Picking 250 kHz again puts radio2
 back on 911.150 MHz. The main radio stays sub-GHz (`tempradio` refuses 2.4 GHz).
 
 - Only LR1121 and LR2021 radios can join a 2.4 GHz radio2. The SX1262 boards,
