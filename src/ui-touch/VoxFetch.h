@@ -169,6 +169,25 @@ class VoxFetch {
   // Packets were flowing and stopped: the tail was lost.
   // Three gaps and 1 s (was 2.5 s). Same as voxStallWait.
   static uint32_t stallWait(uint32_t packet_gap) { return packet_gap * 3 + 1000; }
+  // A holder that isn't the sender answers only once the clip's packets have
+  // been off the air a while (four zero-hop gaps, at least 2 s), waiting at
+  // most kHolderAirWaitMaxMs; its first packet follows about
+  // kHolderAnswerLeadMs later. Same as the app's voxHolderAirWaitMaxMs,
+  // voxHolderAnswerLeadMs and voxAirQuietMs.
+  static constexpr uint32_t kHolderAirWaitMaxMs = 20000;
+  static constexpr uint32_t kHolderAnswerLeadMs = 3000;
+  static uint32_t airQuietMs(uint32_t zero_hop_gap) {
+    return zero_hop_gap * 4 > 2000 ? zero_hop_gap * 4 : 2000;
+  }
+  // A request with no answer yet timing out while the clip's packets are
+  // still on the air: holders are still waiting for quiet, so asking again
+  // only adds another answer to the same air. How long to hold, or 0 to ask
+  // now. Same as voxAirHoldMs.
+  static uint32_t airHoldMs(uint32_t since_heard, uint32_t since_asked, uint32_t quiet) {
+    if (since_asked > kHolderAirWaitMaxMs + quiet + kHolderAnswerLeadMs) return 0;
+    const uint32_t want = quiet + kHolderAnswerLeadMs;
+    return since_heard < want ? want - since_heard : 0;
+  }
   // Unasked packets (a push) stopped with some missing: ask for the rest when
   // at least half is here.
   static bool shouldFinishPassive(int received, int total) {
@@ -242,6 +261,8 @@ class VoxFetch {
     uint8_t rx_gaps = 0;       // how many gaps that is from
     uint32_t asked_ms = 0;     // when the last request went out (the log's timing)
     bool answered = false;     // a packet came since
+    uint32_t heard_ms = 0;     // when any packet of it was last heard, from anyone (copies too)
+    bool air_busy_at_ask = false;   // its packets were still on the air when the last request went out
     bool probe_on = false;     // probeFirst(): ask for the thumbnail's packets at probe_at
     uint32_t probe_at = 0;
     uint8_t probe_tries = 0;   // asks made

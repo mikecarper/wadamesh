@@ -203,8 +203,11 @@ uint32_t VoxFetch::airMs(const Session& s) {
 }
 
 // The gap expected between this transfer's packets. The model's, until a few
-// have come in: then twice the gap they actually came at, when that's sooner,
-// so a lost tail is asked for again in seconds, not tens of seconds.
+// have come in: then twice the gap they actually came at, at most three times
+// the model. Sooner: a lost tail is asked for again in seconds, not tens of
+// seconds. Later: a sender whose radio is slower than ours (a Keymind Cascade
+// radio sharing one chip with radio2 sends radio2 packets with a long
+// preamble, over twice the airtime) is waited for. As voxBurstGap.
 uint32_t VoxFetch::burstGap(Session& s) {
   const uint32_t air = airMs(s);
   const uint32_t model = packetGap(s.last == kChannel, hops(s), air);
@@ -212,7 +215,7 @@ uint32_t VoxFetch::burstGap(Session& s) {
   uint32_t seen = s.rx_gap_ms * 2;
   const uint32_t low = zeroHopGap(air);
   if (seen < low) seen = low;
-  return seen < model ? seen : model;
+  return seen < model * 3 ? seen : model * 3;
 }
 
 // Packets of one burst: smooth the gap between them. The first packet after a
@@ -358,6 +361,9 @@ void VoxFetch::attempt(Session& s) {
   s.at_last_attempt = s.asm_.total() ? s.asm_.received() : 0;
   s.rx_last_ms = 0;   // the next packet starts a new burst
   s.asked_ms = io_.nowMs();
+  // Its packets still on the air (a push, someone's answer): holders other
+  // than the sender answer only once it's quiet.
+  s.air_busy_at_ask = s.heard_ms && s.asked_ms - s.heard_ms < airQuietMs(zeroHopGap());
   s.answered = false;
 
   uint8_t missing[VoxWire::kMaxPackets];
@@ -418,7 +424,8 @@ void VoxFetch::attempt(Session& s) {
   }
   if (s.st != kReceiving) s.st = kRequesting;
   s.note = nullptr;
-  arm(s, stallBackoff(waitFor(s), s.stalls));
+  arm(s, stallBackoff(waitFor(s), s.stalls) +
+             (s.air_busy_at_ask && s.st != kReceiving ? kHolderAirWaitMaxMs : 0));
   io_.changed(s.sid);
 }
 
@@ -430,6 +437,18 @@ void VoxFetch::onTimeout(Session& s) {
     return;
   }
   if (s.st != kRequesting && s.st != kReceiving) return;
+  // No answer yet, and its packets are still on the air: holders are still
+  // waiting for quiet. Hold the next request rather than add another answer.
+  if (!s.answered && s.asked_ms && s.heard_ms) {
+    const uint32_t now = io_.nowMs();
+    const uint32_t hold = airHoldMs(now - s.heard_ms, now - s.asked_ms, airQuietMs(zeroHopGap()));
+    if (hold) {
+      logf("[VOX] fetch %08lx: still on the air (heard %lu ms ago), holding %lu ms", (unsigned long)s.sid,
+           (unsigned long)(now - s.heard_ms), (unsigned long)hold);
+      arm(s, hold);
+      return;
+    }
+  }
   const int got = s.storage ? s.asm_.received() : 0;
   const int stall_budget = stallBudget(got, s.total);
   if (s.asked_ms) {
@@ -492,6 +511,7 @@ void VoxFetch::onPayload(const uint8_t* data, size_t len, int channel, uint8_t v
     return;
   }
   if (s->st == kComplete) return;
+  s->heard_ms = io_.nowMs();   // on the air, whoever it was for
   if (relayed) s->relayed = true;
   if (channel >= 0 && hops >= 0 && hops < s->min_hops) s->min_hops = (uint8_t)hops;
   if (channel < 0) s->raw_seen = true;
