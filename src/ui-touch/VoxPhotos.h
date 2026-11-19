@@ -93,6 +93,10 @@ void setQuick(bool on);
 // (VoxFountain.h), and pace flooded answers closer (FloodPace.h).
 void setFast(bool on);
 bool fast();
+// Adaptive spacing (with Fast MediaMesh): answers' packet spacing learns while
+// the farthest listeners lose almost none (FloodPace.h).
+void setAdaptive(bool on);
+bool adaptive();
 // Moves when answers that change a bubble's height may have changed (the index
 // landed): the open chat is laid out again.
 uint32_t layoutVersion();

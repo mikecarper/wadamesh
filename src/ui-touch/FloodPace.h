@@ -40,14 +40,32 @@ inline uint32_t fastBaseGapMs(uint32_t air) {
   return g > 400 ? g : 400;
 }
 
+// Adaptive spacing: the tightest an answer's gap may learn (1.6 airtimes and a
+// little, at least 300 ms). As voxFloodAdaptiveFloorMs.
+inline uint32_t adaptiveFloorMs(uint32_t air) {
+  const uint32_t g = (uint32_t)(air * 1.6 + 0.5) + 150;
+  return g > 300 ? g : 300;
+}
+// After an answer lost packets because of the spacing, the gap stays 10% above
+// it this long.
+constexpr uint32_t kAdaptiveHoldMs = 30u * 60u * 1000u;
+// A listener's loss rising this many points over what it lost at a wider gap
+// is the spacing's doing.
+constexpr int kAdaptiveRisePct = 7;
+
 // One answer: the data packets it sent (bit i: packet i), the first of them,
-// and what reports on it have done.
+// and what reports on it have done. gap: the gap it went at (adaptive
+// spacing).
 struct Answer {
   uint8_t sent[32];
   int n;
   int first;
   bool clean, slowed, first_came, settle_up, loss_seen;
-  Answer() : n(0), first(-1), clean(false), slowed(false), first_came(false), settle_up(false), loss_seen(false) {
+  uint32_t gap;
+  bool adapt_down, adapt_up;
+  Answer()
+      : n(0), first(-1), clean(false), slowed(false), first_came(false), settle_up(false), loss_seen(false),
+        gap(0), adapt_down(false), adapt_up(false) {
     memset(sent, 0, sizeof sent);
   }
   void add(int i) {
@@ -71,10 +89,43 @@ struct Pace {
   // report on each answer that saw less brings it a quarter down. As the app's
   // VoxFloodPace.lossPct.
   int loss_pct;
+  // Adaptive spacing (with fast): one learnt gap, from the fast base gap down
+  // to adaptiveFloorMs, moved by each listener's own losses, not hop counts (a
+  // listener next door can be 3 hops away in a dense mesh). Under 3% lost:
+  // down a tenth (once per answer, not if the spacing already cost a listener
+  // on it). kAdaptiveRisePct points more than that listener lost at its widest
+  // recent gap: up a quarter (by half at a third), held 10% above the gap that
+  // lost for kAdaptiveHoldMs. As lossy at a wider gap: its own link, no move.
+  // Not heard from before and 10% lost: up a quarter, with no hold. As the app's
+  // VoxFloodPace.adaptive. `now` is set by the caller (VoxServe::paceFor).
+  // Not kept across reboots.
+  bool adaptive = false;
+  uint32_t now = 0;
+  struct Listener { uint8_t key[6]; uint32_t gap; int pct; bool used; };
+  mutable uint32_t ad_air = 0xFFFFFFFFu, ad_gap = 0;
+  uint32_t ad_failed = 0, ad_hold_until = 0;
+  bool ad_held = false;
+  mutable Listener listeners[8] = {};
+  int listener_next = 0;
+
   explicit Pace(uint32_t air_ms = 0, bool fast_ = false)
       : air(air_ms), gap(fast_ ? fastBaseGapMs(air_ms) : baseGapMs(air_ms)), extra(0), fast(fast_), loss_pct(0) {}
 
   uint32_t base() const { return fast ? fastBaseGapMs(air) : baseGapMs(air); }
+  bool adaptiveOn() const { return fast && adaptive; }
+  void adaptiveInit() const {
+    if (ad_air == air) return;
+    ad_air = air;
+    ad_gap = base();
+    for (Listener& l : listeners) l.used = false;
+  }
+  bool holding() const { return ad_held && (int32_t)(now - ad_hold_until) < 0; }
+  uint32_t adFloor() const {
+    adaptiveInit();
+    uint32_t f = adaptiveFloorMs(air);
+    if (holding() && ad_failed * 11 / 10 > f) f = ad_failed * 11 / 10;
+    return f < slowGapMs(air) ? f : slowGapMs(air);
+  }
   uint32_t fastGapMs(int hops) const {
     const uint32_t b = base();
     if (hops < 2 || fast) return b;
@@ -82,9 +133,62 @@ struct Pace {
     return f > b ? f : b;
   }
   uint32_t gapMs(int hops) const {
+    if (adaptiveOn()) {
+      adaptiveInit();
+      const uint32_t lo = adFloor(), hi = slowGapMs(air);
+      return ad_gap < lo ? lo : ad_gap > hi ? hi : ad_gap;
+    }
     const uint32_t lo = fastGapMs(hops), hi = slowGapMs(air);
     return gap < lo ? lo : gap > hi ? hi : gap;
   }
+  const char* adaptiveNote() const { return adaptiveOn() ? " (adaptive)" : ""; }
+  // Adaptive spacing: `lost` of `a`'s packets were missing for listener `key`
+  // (nullptr: not known, so no baseline). True when the gap moved.
+  bool adapt(Answer& a, int lost, const uint8_t* key) {
+    adaptiveInit();
+    const int pct = lost * 100 / a.n;
+    const uint32_t at = a.gap ? a.gap : ad_gap;
+    Listener* base = nullptr;
+    for (Listener& l : listeners)
+      if (key && l.used && memcmp(l.key, key, 6) == 0) base = &l;
+    const bool base_known = base != nullptr;
+    bool spacing;
+    if (!base) spacing = pct >= 10;
+    else if (at < base->gap) spacing = pct - base->pct >= kAdaptiveRisePct && pct >= 3;
+    else spacing = false;   // as wide as its baseline: a poor link if it loses here too
+    if (key && (!base || at >= base->gap)) {
+      if (!base) { base = &listeners[listener_next]; listener_next = (listener_next + 1) % 8; }
+      memcpy(base->key, key, 6);
+      base->gap = at;
+      base->pct = pct;
+      base->used = true;
+    }
+    if (spacing) {
+      if (a.adapt_up) return false;
+      a.adapt_up = true;
+      if (base_known) {   // proven the spacing's: hold above it (a first report proves nothing)
+        ad_failed = holding() && ad_failed > at ? ad_failed : at;
+        ad_hold_until = now + kAdaptiveHoldMs;
+        ad_held = true;
+      }
+      uint32_t up = pct * 3 >= 100 ? ad_gap * 3 / 2 : ad_gap * 5 / 4;
+      const uint32_t lo = adFloor();
+      if (up < lo) up = lo;
+      ad_gap = up < slowGapMs(air) ? up : slowGapMs(air);
+      return true;
+    }
+    if (pct < 3 && !a.adapt_down && !a.adapt_up) {
+      a.adapt_down = true;
+      uint32_t down = ad_gap * 9 / 10;
+      const uint32_t lo = adFloor();
+      if (down < lo) down = lo;
+      if (down == ad_gap) return false;
+      ad_gap = down;
+      return true;
+    }
+    return false;
+  }
+
   uint32_t settleMs(int hops) const {
     if (hops <= 0) return 0;
     int r = (hops < 2 ? hops : 2) + extra;
@@ -92,12 +196,14 @@ struct Pace {
     if (r > 4) r = 4;
     return (uint32_t)r * relayMs(air);
   }
-  // A listener's request after `a`: `missing` (bit i) is what it still lacks.
-  void feedback(Answer& a, const uint8_t missing[32]) {
-    if (a.n <= 0) return;
+  // A listener's request after `a`: `missing` (bit i) is what it still lacks;
+  // `key` is the listener's (adaptive spacing). True when the adaptive gap moved.
+  bool feedback(Answer& a, const uint8_t missing[32], const uint8_t* key = nullptr) {
+    if (a.n <= 0) return false;
     auto miss = [&](int i) { return (missing[i >> 3] & (1u << (i & 7))) != 0; };
     int lost = 0;
     for (int i = 0; i < 256; i++) if (a.has(i) && miss(i)) lost++;
+    const bool moved = adaptiveOn() && adapt(a, lost, key);
     int pct = lost * 100 / a.n;
     if (pct > 40) pct = 40;
     if (pct > loss_pct) loss_pct = pct;
@@ -115,7 +221,7 @@ struct Pace {
       const uint32_t g = gap * 3 / 2;
       gap = g < slowGapMs(air) ? g : slowGapMs(air);
     }
-    if (a.n < 2) return;
+    if (a.n < 2) return moved;
     const bool first_lost = miss(a.first);
     if (!first_lost) {
       if (!a.first_came) {
@@ -131,6 +237,7 @@ struct Pace {
         extra = extra < 2 ? extra + 1 : 2;
       }
     }
+    return moved;
   }
 };
 

@@ -838,6 +838,8 @@ void setFast(bool on) {
   g_serve.setFast(on);
 }
 bool fast() { return g_serve.fast(); }
+void setAdaptive(bool on) { g_serve.setAdaptive(on); }
+bool adaptive() { return g_serve.adaptive(); }
 uint32_t layoutVersion() { return g_layout_ver; }
 
 bool parse(const char* text, VoxWire::Envelope* env) { return VoxWire::parseEnvelope(text, env); }
