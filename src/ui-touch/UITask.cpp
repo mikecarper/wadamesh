@@ -47049,6 +47049,11 @@ static void mapCanvasEventCb(lv_event_t* e) {
     } else if (n_hits > 0) {
       openMapPicker(hits, n_hits);
     }
+#if CAP_MM_COVERAGE
+    else {
+      mmcovui::mapTap(p);   // a MediaMesh coverage dot: the repeaters heard there
+    }
+#endif
     return;
   }
   double start_wx, start_wy;
@@ -66910,6 +66915,13 @@ enum AppDrawerAction {
 #include "OtpMessengerUI.inc"
 // Team (app drawer -> APPACT_TEAM): MeshCore Open TAK team awareness; rules in TeamCore.cpp.
 #include "TeamUI.inc"
+#if CAP_MM_COVERAGE
+// A tapped MediaMesh coverage dot's sheet (MediaMeshCoverageUI.inc's mapTap).
+static void mmcovShowSheet(const char* title, const char* body) {
+  lv_obj_t* card = teamui::sheetOpen(title, body);
+  teamui::sheetBtn(card, TR("Close"), [](lv_event_t*) { teamui::sheetClose(); });
+}
+#endif
 // Flock You, Drone Detector and Sound link used to switch themselves on the
 // first time their page opened, and stay on across reboots: each then runs all
 // the time (Wi-Fi/BLE scanning, or the mic decoder) and slows everything. Each

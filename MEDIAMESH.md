@@ -146,6 +146,10 @@ the main mesh's), against the lowest SNR radio2's spreading factor decodes
 `src/helpers/MediaMeshCoverage.h`, with the same golden values as the app's
 test. A margin under a few dB is worth checking by sending a photo there.
 
+Tap a dot on the map to see when it was measured and each MediaMesh repeater
+heard there, strongest first: its margin on radio2 and the SNR both ways (as
+in the app). Dots read back from the card keep their repeaters too.
+
 It needs a GPS fix, and the GPS stays on while it records, with the screen off
 too. A Discover scan or Find MediaMesh in progress pauses it. Radios that can't
 run radio2 themselves can still map the repeaters'. The map keeps the last 500

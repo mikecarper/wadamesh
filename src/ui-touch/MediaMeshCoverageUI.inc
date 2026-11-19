@@ -12,8 +12,12 @@
 //
 // Included in UITask.cpp before the map markers; the recorder runs from the UI
 // loop, so it keeps going with the screen off (GPS stays awake while it does).
+// Tapping a dot on the map (mapTap) shows the MediaMesh repeaters heard there.
 
 #include "helpers/MediaMeshCoverage.h"
+
+// The sheet a tapped dot opens (Team's sheet: defined after TeamUI.inc).
+static void mmcovShowSheet(const char* title, const char* body);
 
 namespace mmcovui {
 
@@ -33,19 +37,55 @@ static uint32_t s_tick_ms = 0, s_hold_until = 0;
 static lv_obj_t* s_layer = nullptr;                  // the map's dots (one object, drawn by hand)
 static double s_cwx = 0, s_cwy = 0;
 static lv_obj_t* s_legend = nullptr;                 // Settings: the counts
+// What each sample in the ring heard, for a tapped dot: when (epoch, 0 if not
+// known) and its repeaters, strongest first (PSRAM, ~59 KB; without it a dot
+// shows only its count and best margin).
+struct Rep { char name[16]; int8_t snr_q4, remote_q4, margin_q4; };
+static uint32_t* s_epoch = nullptr;
+static Rep* s_reps = nullptr;                        // kRing x mmcov::kMaxRepeaters
 
 static bool ensureRing() {
   if (!s_ring) s_ring = (mmcov::Sample*)psAlloc(sizeof(mmcov::Sample) * kRing);
+  if (s_ring && !s_epoch) s_epoch = (uint32_t*)psAlloc(sizeof(uint32_t) * kRing);
+  if (s_ring && !s_reps) s_reps = (Rep*)psAlloc(sizeof(Rep) * kRing * mmcov::kMaxRepeaters);
   return s_ring != nullptr;
 }
 
-static void push(const mmcov::Sample& s) {
+static void push(const mmcov::Sample& s, uint32_t epoch = 0) {
   if (!ensureRing()) return;
-  mmcov::Sample& slot = s_ring[s_n % kRing];
+  const int at = s_n % kRing;
+  mmcov::Sample& slot = s_ring[at];
   if (s_n >= kRing) { uint8_t r = slot.reach(); if (s_counts[r]) s_counts[r]--; }
   slot = s;
+  if (s_epoch) s_epoch[at] = epoch;
+  if (s_reps) memset(&s_reps[at * mmcov::kMaxRepeaters], 0, sizeof(Rep) * mmcov::kMaxRepeaters);
   s_counts[s.reach()]++;
   s_n++;
+}
+
+// Repeater k of the newest sample.
+static void setRep(int k, const char* name, float snr, float remote, float margin) {
+  if (!s_reps || !s_n || k < 0 || k >= mmcov::kMaxRepeaters) return;
+  Rep& r = s_reps[((s_n - 1) % kRing) * mmcov::kMaxRepeaters + k];
+  snprintf(r.name, sizeof r.name, "%s", name ? name : "");
+  r.snr_q4 = mmcov::toQ4(snr);
+  r.remote_q4 = mmcov::toQ4(remote);
+  r.margin_q4 = mmcov::toQ4(margin);
+}
+
+// A CSV line's repeater fields (after best_margin): name, snr, remote, margin.
+static bool parseRep(const char* c5, char* name, size_t cap, float* snr, float* remote, float* margin) {
+  const char* n = c5 ? c5 + 1 : nullptr;
+  const char* c6 = n ? strchr(n, ',') : nullptr;
+  if (!c6 || c6 == n) return false;
+  snprintf(name, cap, "%.*s", (int)(c6 - n), n);
+  char* end = nullptr;
+  *snr = strtof(c6 + 1, &end);
+  if (!end || *end != ',') return false;
+  *remote = strtof(end + 1, &end);
+  if (!end || *end != ',') return false;
+  *margin = strtof(end + 1, nullptr);
+  return true;
 }
 
 // The last part of the card's file back into the ring, once: the map shows
@@ -71,8 +111,16 @@ static void loadFromCard() {
     if (!c4) continue;
     char key[48];
     snprintf(key, sizeof key, "%.*s", (int)(c3 - p), p);
+    const char* c5 = strchr(c4 + 1, ',');
+    char rname[24];
+    float rsnr = 0, rremote = 0, rmargin = 0;
+    const bool has_rep = parseRep(c5, rname, sizeof rname, &rsnr, &rremote, &rmargin);
     if (strcmp(key, prev) == 0) {   // another repeater of the same sample
-      if (s_n && s_ring) { mmcov::Sample& last = s_ring[(s_n - 1) % kRing]; if (last.count < 255) last.count++; }
+      if (s_n && s_ring) {
+        mmcov::Sample& last = s_ring[(s_n - 1) % kRing];
+        if (has_rep) setRep(last.count, rname, rsnr, rremote, rmargin);
+        if (last.count < 255) last.count++;
+      }
       continue;
     }
     snprintf(prev, sizeof prev, "%s", key);
@@ -82,7 +130,8 @@ static void loadFromCard() {
     const bool none = strncmp(c3 + 1, "none", 4) == 0;
     s.count = none ? 0 : 1;
     s.best_q4 = none ? 0 : mmcov::toQ4((float)strtod(c4 + 1, nullptr));
-    push(s);
+    push(s, (uint32_t)strtoul(p, nullptr, 10));
+    if (!none && has_rep) setRep(0, rname, rsnr, rremote, rmargin);
   }
   f.close();
 #endif
@@ -190,8 +239,10 @@ static void collect(uint32_t now) {
   s.lon_e6 = s_ask_lon;
   s.count = (uint8_t)n;
   s.best_q4 = n ? mmcov::toQ4(heard[0].margin) : 0;
-  push(s);
-  writeSample((uint32_t)rtc_clock.getCurrentTime(), s, heard, n);
+  const uint32_t epoch = (uint32_t)rtc_clock.getCurrentTime();
+  push(s, epoch);
+  for (int i = 0; i < n; i++) setRep(i, heard[i].name, heard[i].snr, heard[i].remote, heard[i].margin);
+  writeSample(epoch, s, heard, n);
   s_have_last = true;
   s_last_lat = s_ask_lat;
   s_last_lon = s_ask_lon;
@@ -254,6 +305,57 @@ static void layerDrawCb(lv_event_t* e) {
                          (lv_coord_t)(a.y1 + sy + r)};
     lv_draw_rect(dc, &rd, &d);
   }
+}
+
+// A tap on the map: the dot nearest it (within 16 px), if any, opens a sheet
+// with when it was measured and the MediaMesh repeaters heard there.
+static bool mapTap(lv_point_t p) {
+  if (!s_layer || !lv_obj_is_valid(s_layer) || !s_ring || !s_n) return false;
+  lv_area_t a;
+  lv_obj_get_coords(s_layer, &a);
+  const int total = s_n < kRing ? s_n : kRing;
+  int best = -1, best_d = 16 * 16;
+  for (int k = 0; k < total; k++) {   // newest wins a tie: it's drawn on top
+    const int at = (s_n - total + k) % kRing;
+    const mmcov::Sample& s = s_ring[at];
+    double wx, wy;
+    latLonToWorldPx(s.lat_e6 / 1e6, s.lon_e6 / 1e6, s_map_zoom, &wx, &wy);
+    const int sx = (int)(wx - s_cwx + k_map_canvas_w / 2) + a.x1, sy = (int)(wy - s_cwy + k_map_canvas_h / 2) + a.y1;
+    const int dx = sx - p.x, dy = sy - p.y, d = dx * dx + dy * dy;
+    if (d <= best_d) { best = at; best_d = d; }
+  }
+  if (best < 0) return false;
+  const mmcov::Sample& s = s_ring[best];
+  char body[600];
+  int o = 0;
+  const uint32_t epoch = s_epoch ? s_epoch[best] : 0;
+  const uint32_t now = (uint32_t)rtc_clock.getCurrentTime();
+  if (epoch && now >= epoch) {
+    const uint32_t ago = now - epoch;
+    if (ago < 3600) o += snprintf(body + o, sizeof body - o, "%s %lu min %s\n", TR("Measured"), (unsigned long)(ago / 60), TR("ago"));
+    else if (ago < 172800) o += snprintf(body + o, sizeof body - o, "%s %lu h %s\n", TR("Measured"), (unsigned long)(ago / 3600), TR("ago"));
+    else o += snprintf(body + o, sizeof body - o, "%s %lu %s\n", TR("Measured"), (unsigned long)(ago / 86400), TR("days ago"));
+  }
+  if (!s.count) {
+    o += snprintf(body + o, sizeof body - o, "%s", TR("No MediaMesh repeater answered here."));
+  } else {
+    bool listed = false;
+    for (int k = 0; s_reps && k < s.count && k < mmcov::kMaxRepeaters && o < (int)sizeof body - 80; k++) {
+      const Rep& r = s_reps[best * mmcov::kMaxRepeaters + k];
+      if (!r.name[0]) continue;
+      listed = true;
+      const char* reach = mmcov::reachName(mmcov::reachFor(true, r.margin_q4 / 4.0f));
+      o += snprintf(body + o, sizeof body - o, "%s (%s): %+.1f dB %s\n  SNR %.1f dB %s, %.1f dB %s\n", r.name, reach,
+                    r.margin_q4 / 4.0f, TR("to spare on radio2"), r.snr_q4 / 4.0f, TR("heard here"),
+                    r.remote_q4 / 4.0f, TR("at the repeater"));
+    }
+    if (!listed)
+      o += snprintf(body + o, sizeof body - o, "%u %s, %s %+.1f dB\n", (unsigned)s.count, TR("MediaMesh repeaters"),
+                    TR("best"), s.best_q4 / 4.0f);
+  }
+  (void)o;
+  mmcovShowSheet(TR("MediaMesh coverage here"), body);
+  return true;
 }
 
 static void freeMapObj() {
