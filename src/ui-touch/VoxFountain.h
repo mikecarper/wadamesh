@@ -80,6 +80,24 @@ inline int owed(int uncovered, int covered, int sent_since, int loss_pct = 0) {
   return o < 0 ? 0 : o;
 }
 
+// Whether a packet of session `heard` belongs to the same transfer as `sid`:
+// its data, parity (VoxFec.h) or repair packets, or another part of the same
+// SuperMax clip (part k's id is the first's XOR 0x7A000000 + k * 0x010101), or
+// theirs. The sender answers requests one after another: a listener hearing
+// these is waiting on its sender. As the app's voxSameTransfer.
+inline bool sameTransfer(uint32_t sid, uint32_t heard) {
+  const uint32_t forms[3] = {heard, VoxFec::paritySid(heard), repairSid(heard)};
+  for (uint32_t b : forms) {
+    const uint32_t d = sid ^ b;
+    for (uint32_t j = 0; j <= 3; j++)
+      for (uint32_t k = 0; k <= 3; k++) {
+        const uint32_t oj = j ? 0x7A000000u + j * 0x00010101u : 0, ok = k ? 0x7A000000u + k * 0x00010101u : 0;
+        if (d == (oj ^ ok)) return true;
+      }
+  }
+  return false;
+}
+
 // A request lists at most this many packets: one listing this many may lack
 // more after the last it names (the app's voxFountainListCap).
 constexpr int kListCap = VoxWire::kSaltedFetchIndices;

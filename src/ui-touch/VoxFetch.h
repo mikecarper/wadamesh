@@ -195,12 +195,14 @@ class VoxFetch {
     const uint32_t want = quiet + kHolderAnswerLeadMs;
     return since_heard < want ? want - since_heard : 0;
   }
-  // Fast MediaMesh: a request timing out while MediaMesh is still busy (a
-  // packet of any clip heard since_heard ago: the sender sending another part,
-  // another listener's answer, or this one's repair packets) waits for quiet
-  // rather than ask again: each request floods the main mesh, and every
-  // repeater scanning radio2 misses radio2 packets while relaying it. 0 to ask
-  // now; never past kBusyAirHoldMaxMs after asking. Same as voxBusyAirHoldMs.
+  // Fast MediaMesh: a request timing out while its own transfer is still on
+  // the air (a packet of it heard since_heard ago, VoxFountain::sameTransfer:
+  // another part of the clip going to another listener, or this one's repair
+  // or parity packets) waits for quiet rather than ask again: the sender
+  // answers one request after another, so asking again only queues, and each
+  // request floods the main mesh, where every repeater scanning radio2 misses
+  // radio2 packets while relaying it. Other clips don't hold it. 0 to ask now;
+  // never past kBusyAirHoldMaxMs after asking. Same as voxBusyAirHoldMs.
   static constexpr uint32_t kBusyAirHoldMaxMs = 180000;
   static uint32_t busyAirHoldMs(uint32_t since_heard, uint32_t since_asked, uint32_t quiet) {
     if (since_asked > kBusyAirHoldMaxMs) return 0;
@@ -354,5 +356,8 @@ class VoxFetch {
   Orphan* orphans_ = nullptr;   // kMaxOrphans, allocated on first use (PSRAM)
   int orphan_next_ = 0;
   bool fast_ = false;   // VoxPhotos::setFast turns it on from the setting
-  uint32_t media_heard_ms_ = 0;   // a packet of any clip last heard (busyAirHoldMs)
+  // The sessions whose packets were heard last, and when (busyAirHoldMs).
+  struct HeardSid { uint32_t sid; uint32_t at; };
+  HeardSid heard_sids_[8] = {};
+  uint32_t transferHeardMs(uint32_t sid) const;
 };
