@@ -53,6 +53,8 @@ int main() {
   char line[160];
   csvLine(line, sizeof line, 1760000000, 47600000, -122300000, Marginal, 4.48f, "First Hill", 4.5f, 3.0f, 4.48f);
   assert(strcmp(line, "1760000000,47.600000,-122.300000,marginal,4.5,First Hill,4.5,3.0,4.5\n") == 0);
+  csvLine(line, sizeof line, 1760000000, 47600000, -122300000, Marginal, 4.48f, "First Hill", 4.5f, 3.0f, 4.48f, "1ea5e195");
+  assert(strcmp(line, "1760000000,47.600000,-122.300000,marginal,4.5,First Hill,4.5,3.0,4.5,1ea5e195\n") == 0);
   csvLine(line, sizeof line, 1760000000, 47600000, -122300000, None, 0, nullptr, 0, 0, 0);
   assert(strcmp(line, "1760000000,47.600000,-122.300000,none,,,,,\n") == 0);
   assert(reachRgb(Good) == 0x22C55E && reachRgb(None) == 0x6B7280);

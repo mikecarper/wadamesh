@@ -117,17 +117,19 @@ inline bool due(bool have_last, int32_t last_lat, int32_t last_lon, uint32_t las
   return metresBetween(last_lat, last_lon, lat, lon) >= kMoveMetres;
 }
 
-static constexpr const char* kCsvHeader = "epoch,lat,lon,reach,best_margin,repeater,snr,remote_snr,margin\n";
+// key: the repeater's first 4 key bytes (hex), so the points can be sent to an
+// analyzer (MediaMeshCoverageShare.h); files from before it have no such column.
+static constexpr const char* kCsvHeader = "epoch,lat,lon,reach,best_margin,repeater,snr,remote_snr,margin,key\n";
 
 /** One CSV line per repeater (or one with blanks when none answered). */
 inline int csvLine(char* out, size_t cap, uint32_t epoch, int32_t lat_e6, int32_t lon_e6, Reach reach, float best,
-                   const char* repeater, float snr, float remote_snr, float m) {
+                   const char* repeater, float snr, float remote_snr, float m, const char* key = nullptr) {
   char lat[16], lon[16];
   snprintf(lat, sizeof lat, "%.6f", lat_e6 / 1e6);
   snprintf(lon, sizeof lon, "%.6f", lon_e6 / 1e6);
   if (!repeater) return snprintf(out, cap, "%lu,%s,%s,%s,,,,,\n", (unsigned long)epoch, lat, lon, reachName(reach));
-  return snprintf(out, cap, "%lu,%s,%s,%s,%.1f,%s,%.1f,%.1f,%.1f\n", (unsigned long)epoch, lat, lon, reachName(reach),
-                  best, repeater, snr, remote_snr, m);
+  return snprintf(out, cap, "%lu,%s,%s,%s,%.1f,%s,%.1f,%.1f,%.1f%s%s\n", (unsigned long)epoch, lat, lon, reachName(reach),
+                  best, repeater, snr, remote_snr, m, key ? "," : "", key ? key : "");
 }
 
 }  // namespace mmcov

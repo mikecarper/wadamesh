@@ -13,8 +13,15 @@
 // Included in UITask.cpp before the map markers; the recorder runs from the UI
 // loop, so it keeps going with the screen off (GPS stays awake while it does).
 // Tapping a dot on the map (mapTap) shows the MediaMesh repeaters heard there.
+//
+// Share coverage points (off by default) sends the file's points to a
+// CoreScope analyzer, analyzer.cascadiamesh.org unless another is entered,
+// signed by this standalone's key (helpers/MediaMeshCoverageShare.h; the net
+// worker does the request). Where it got to in the file is kept, so each
+// point goes once.
 
 #include "helpers/MediaMeshCoverage.h"
+#include "helpers/MediaMeshCoverageShare.h"
 
 // The sheet a tapped dot opens (Team's sheet: defined after TeamUI.inc).
 static void mmcovShowSheet(const char* title, const char* body);
@@ -27,6 +34,10 @@ static mmcov::Sample* s_ring = nullptr;
 static int s_n = 0;                                  // samples ever (ring slot = n % kRing)
 static uint32_t s_counts[4] = {0, 0, 0, 0};          // per reach, of the samples in the ring
 static bool s_loaded = false, s_rec = false, s_show = true;
+// Sharing (see the top): on, where to, and how far into the file has gone.
+static bool s_share = false;
+static char s_url[128] = "";
+static uint32_t s_sent_off = 0;
 static bool s_have_last = false;
 static int32_t s_last_lat = 0, s_last_lon = 0;
 static uint32_t s_last_ms = 0;
@@ -145,9 +156,13 @@ static void prefsLoad() {
   if (p.begin("mmcov", true)) {
     s_rec = p.getBool("rec", false);
     s_show = p.getBool("show", true);
+    s_share = p.getBool("share", false);
+    if (!p.getString("url", s_url, sizeof s_url)) snprintf(s_url, sizeof s_url, "%s", mmshare::kDefaultAnalyzer);
+    s_sent_off = p.getUInt("off", 0);
     p.end();
   }
 #endif
+  if (!s_url[0]) snprintf(s_url, sizeof s_url, "%s", mmshare::kDefaultAnalyzer);
   loadFromCard();
 }
 
@@ -157,12 +172,15 @@ static void prefsSave() {
   if (p.begin("mmcov", false)) {
     p.putBool("rec", s_rec);
     p.putBool("show", s_show);
+    p.putBool("share", s_share);
+    p.putString("url", s_url);
+    p.putUInt("off", s_sent_off);
     p.end();
   }
 #endif
 }
 
-struct Heard { char name[24]; float snr, remote, margin; };
+struct Heard { char name[24]; char key[9]; float snr, remote, margin; };
 
 static void writeSample(uint32_t epoch, const mmcov::Sample& s, const Heard* h, int n) {
 #if CAP_SD || defined(TLORA_PAGER)
@@ -180,7 +198,7 @@ static void writeSample(uint32_t epoch, const mmcov::Sample& s, const Heard* h, 
   }
   for (int i = 0; i < n; i++) {
     mmcov::csvLine(line, sizeof line, epoch, s.lat_e6, s.lon_e6, s.reach(), best, h[i].name, h[i].snr, h[i].remote,
-                   h[i].margin);
+                   h[i].margin, h[i].key);
     f.print(line);
   }
   f.close();
@@ -222,6 +240,7 @@ static void collect(uint32_t now) {
     x.snr = h.our_snr_q4 / 4.0f;
     x.remote = h.their_snr_q4 / 4.0f;
     x.margin = mmcov::margin(mmcov::linkSnr(h.our_snr_q4, h.their_snr_q4), main_bw, p.bw_hz, p.sf);
+    snprintf(x.key, sizeof x.key, "%02x%02x%02x%02x", h.pubkey[0], h.pubkey[1], h.pubkey[2], h.pubkey[3]);
     ContactInfo* c = the_mesh.lookupContactByPubKey(h.pubkey, PUB_KEY_SIZE);
     if (c) snprintf(x.name, sizeof x.name, "%s", c->name);
     else snprintf(x.name, sizeof x.name, "%02X%02X%02X%02X", h.pubkey[0], h.pubkey[1], h.pubkey[2], h.pubkey[3]);
@@ -251,8 +270,11 @@ static void collect(uint32_t now) {
   if (s_show) renderMapMarkers();
 }
 
+static void shareTick(uint32_t now);
+
 static void loopTick(uint32_t now) {
   if (!s_loaded) prefsLoad();
+  shareTick(now);
   if (!s_rec) return;
   if (s_ask_ms) {
     if ((uint32_t)(now - s_ask_ms) >= mediamesh::kAskListenMs) collect(now);
@@ -275,6 +297,179 @@ static void loopTick(uint32_t now) {
   s_ask_lat = lat_e6;
   s_ask_lon = lon_e6;
 }
+
+// ---- sharing with an analyzer -----------------------------------------------------------
+// One request at a time: the UI builds and signs it (shareTick), the net worker
+// sends it (mmcovPostRun), the UI reads the answer.
+static lv_obj_t* s_share_note = nullptr;             // Settings: what the last send did
+static char s_share_msg[120] = "";
+#if MMCOV_SHARE
+struct Post {
+  char url[200];
+  char method[8];
+  char sig[129];
+  uint8_t* body;                                     // PSRAM, kBodyCap
+  size_t len;
+  char resp[256];
+  char msg[96];
+  int code;
+  uint32_t next_off;                                 // the file offset once this batch is in
+  int points;
+  bool del;
+};
+static constexpr size_t kBodyCap = 64 * 1024;
+static Post* s_post = nullptr;                       // PSRAM
+static volatile uint8_t s_post_state = 0;            // 0 idle, 1 with the worker, 2 answered
+static uint32_t s_share_next_ms = 0;
+static bool s_send_now = false;
+
+static void shareNoteRefresh() {
+  if (!s_share_note || !lv_obj_is_valid(s_share_note)) { s_share_note = nullptr; return; }
+  lv_label_set_text(s_share_note, s_share_msg[0] ? s_share_msg
+                                                 : TR("Off: nothing leaves the standalone. On: what it records goes to the analyzer below, signed by its key. The analyzer shows it as 200 m squares, leaves out where each trip starts and ends, and never says whose it is."));
+}
+
+static void shareSay(const char* m) {
+  snprintf(s_share_msg, sizeof s_share_msg, "%s", m);
+  shareNoteRefresh();
+}
+
+static bool wifiUp() { return WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0; }
+
+static void selfHex(char out[65]) {
+  const uint8_t* pk = the_mesh.getSelfPubKey();
+  for (int i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", pk[i]);
+}
+
+// Signs the body in s_post with prefix, into s_post->sig.
+static void signPost(const char* prefix) {
+  uint8_t digest[32];
+  mesh::Utils::sha256(digest, sizeof digest, s_post->body, (int)s_post->len);
+  char text[96];
+  const int n = mmshare::signedMessage(text, sizeof text, prefix, digest);
+  uint8_t sig[64];
+  the_mesh.uiSign(sig, (const uint8_t*)text, n);
+  for (int i = 0; i < 64; i++) snprintf(s_post->sig + i * 2, 3, "%02x", sig[i]);
+}
+
+static bool ensurePost() {
+  if (!s_post) s_post = (Post*)psAlloc(sizeof(Post));
+  if (s_post && !s_post->body) s_post->body = (uint8_t*)psAlloc(kBodyCap);
+  return s_post && s_post->body;
+}
+
+static void startPost(const char* method) {
+  snprintf(s_post->method, sizeof s_post->method, "%s", method);
+  s_post->resp[0] = 0;
+  s_post->msg[0] = 0;
+  s_post->code = -1;
+  s_post_state = 1;
+  ensureTileFetchTaskRunning();
+  s_mmcov_post_request = true;
+}
+
+// The next batch from the file: false when there is nothing new (or no card).
+static bool buildBatch() {
+#if CAP_SD || defined(TLORA_PAGER)
+  if (SD.cardType() == CARD_NONE) return false;
+  markSdIo();
+  File f = SD.open(kCsv, FILE_READ);
+  if (!f) return false;
+  const uint32_t size = (uint32_t)f.size();
+  if (s_sent_off > size) s_sent_off = 0;   // a new file
+  if (s_sent_off >= size) { f.close(); return false; }
+  f.seek(s_sent_off);
+  char radio[65];
+  selfHex(radio);
+  NodePrefs* np = the_mesh.getNodePrefs();
+  const uint32_t main_bw = np ? (uint32_t)lroundf(np->bw * 1000.0f) : 62500;
+  mmshare::Batch b((char*)s_post->body, kBodyCap);
+  b.begin(radio, (uint32_t)rtc_clock.getCurrentTime(), "Wadamesh TAK", main_bw, 250000, 7);
+  uint32_t next = s_sent_off;
+  char line[200];
+  while (f.available()) {
+    const uint32_t at = (uint32_t)f.position();
+    const size_t n = f.readBytesUntil('\n', line, sizeof line - 1);
+    line[n] = 0;
+    mmshare::Row r;
+    if (!mmshare::parseRow(line, r)) { next = (uint32_t)f.position(); continue; }
+    if (!b.add(r)) { next = at; break; }
+    next = (uint32_t)f.position();
+  }
+  f.close();
+  if (!b.finish()) return false;
+  s_post->len = b.len();
+  s_post->points = b.samples();
+  s_post->next_off = next;
+  if (!b.samples()) {   // only lines that can't be sent (from before keys were written)
+    s_sent_off = next;
+    prefsSave();
+    return false;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+static void shareTick(uint32_t now) {
+  if (s_post_state == 2) {   // answered
+    s_post_state = 0;
+    char m[120], err[96];
+    mmshare::replyError(s_post->resp, err, sizeof err);
+    if (s_post->code == 200) {
+      if (s_post->del) {
+        const char* r = strstr(s_post->resp, "\"removed\":");
+        snprintf(m, sizeof m, "%s: %ld", TR("Points removed from the analyzer"), r ? strtol(r + 10, nullptr, 10) : 0L);
+        s_sent_off = 0;   // sharing again sends them all again
+        s_share = false;  // and it's off until switched on again
+      } else {
+        snprintf(m, sizeof m, "%s: %d", TR("Points sent"), s_post->points);
+        s_sent_off = s_post->next_off;
+        s_share_next_ms = now + 3000;   // there may be more
+      }
+      prefsSave();
+    } else {
+      snprintf(m, sizeof m, "%s: %s", TR("Couldn't send"), err[0] ? err : s_post->msg[0] ? s_post->msg : "no answer");
+      s_share_next_ms = now + 10UL * 60UL * 1000UL;
+    }
+    shareSay(m);
+    return;
+  }
+  if (!s_share || s_post_state || (!s_send_now && (int32_t)(now - s_share_next_ms) < 0)) return;
+  s_share_next_ms = now + 5UL * 60UL * 1000UL;
+  const bool asked = s_send_now;
+  s_send_now = false;
+  if (!wifiUp()) { if (asked) shareSay(TR("Couldn't send: not on Wi-Fi")); return; }
+  if (!ensurePost()) return;
+  if (!mmshare::endpointFor(s_url, s_post->url, sizeof s_post->url)) { shareSay(TR("Couldn't send: that isn't a web address")); return; }
+  if (!buildBatch()) { if (asked) shareSay(TR("Nothing new to send")); return; }
+  s_post->del = false;
+  signPost(mmshare::kSignPrefix);
+  shareSay(TR("Sending…"));
+  startPost("POST");
+}
+
+static void removeMine() {
+  if (s_post_state) return;
+  if (!wifiUp()) { shareSay(TR("Couldn't send: not on Wi-Fi")); return; }
+  if (!ensurePost() || !mmshare::endpointFor(s_url, s_post->url, sizeof s_post->url)) return;
+  char radio[65];
+  selfHex(radio);
+  s_post->len = (size_t)mmshare::deleteBody((char*)s_post->body, kBodyCap, radio, (uint32_t)rtc_clock.getCurrentTime());
+  s_post->del = true;
+  signPost(mmshare::kDeletePrefix);
+  shareSay(TR("Removing…"));
+  startPost("DELETE");
+}
+#else
+static void shareNoteRefresh() {
+  if (!s_share_note || !lv_obj_is_valid(s_share_note)) { s_share_note = nullptr; return; }
+  lv_label_set_text(s_share_note, TR("Not on this board: it can't reach the internet."));
+}
+static void shareTick(uint32_t) {}
+static void removeMine() {}
+#endif
 
 static bool recording() { return s_rec; }
 
@@ -398,6 +593,57 @@ static void buildRows(lv_obj_t* c) {
              "radio2 likely won't reach it. Grey: no MediaMesh repeater answered. An estimate from the main-mesh "
              "signal; every point is saved to mediamesh_coverage.csv on the card, the same format as MeshCore Open "
              "TAK exports.");
+  // Sharing with an analyzer
+  setSwitchRow(c, "Share coverage points",
+               "Sends what it records to a CoreScope analyzer over Wi-Fi, so its MediaMesh coverage map is checked "
+               "against real measurements.",
+               s_share, [](lv_event_t* e) {
+                 s_share = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+                 s_share_msg[0] = 0;
+                 prefsSave();
+                 shareNoteRefresh();
+#if MMCOV_SHARE
+                 if (s_share) s_send_now = true;
+#endif
+               });
+  lv_obj_t* url = setField(c, "Analyzer", mmshare::kDefaultAnalyzer, sizeof s_url - 1);
+  lv_textarea_set_text(url, s_url);
+  auto onUrl = [](lv_event_t* e) {
+    lv_obj_t* ta = lv_event_get_target(e);
+    const char* v = lv_textarea_get_text(ta);
+    char ep[200];
+    char want[sizeof s_url];
+    snprintf(want, sizeof want, "%s", (v && v[0]) ? v : mmshare::kDefaultAnalyzer);
+    if (!mmshare::endpointFor(want, ep, sizeof ep)) {
+      if (g_lv.task) g_lv.task->showAlert(TR("That isn't a web address"), 2000);
+      lv_textarea_set_text(ta, s_url);
+      return;
+    }
+    if (strcmp(want, s_url) != 0) {
+      snprintf(s_url, sizeof s_url, "%s", want);
+      s_sent_off = 0;   // a new analyzer gets everything
+      s_share_msg[0] = 0;
+      prefsSave();
+      shareNoteRefresh();
+    }
+  };
+  lv_obj_add_event_cb(url, onUrl, LV_EVENT_READY, nullptr);
+  lv_obj_add_event_cb(url, onUrl, LV_EVENT_DEFOCUSED, nullptr);
+  setNote(c, "Outside CascadiaMesh? Enter your area's CoreScope analyzer.");
+  s_share_note = setNote(c, "");
+  shareNoteRefresh();
+#if MMCOV_SHARE
+  setButton(c, LV_SYMBOL_UPLOAD, "Send now", [](lv_event_t* e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (!s_share) { shareSay(TR("Switch on Share coverage points first.")); return; }
+    s_send_now = true;
+  });
+  setButton(c, LV_SYMBOL_CLOSE, "Remove my points from the analyzer", [](lv_event_t* e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    showConfirm(TR("Remove every coverage point this standalone sent to the analyzer? The file on the card is kept, and sharing switches off."),
+                TR("Remove"), +[]() { removeMine(); });
+  }, nullptr, SET_DANGER);
+#endif
   setButton(c, LV_SYMBOL_TRASH, "Clear coverage map", [](lv_event_t* e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     showConfirm(TR("Clear the coverage map? The file on the card is kept."), TR("Clear"), +[]() {
@@ -413,3 +659,14 @@ static void buildRows(lv_obj_t* c) {
 }  // namespace mmcovui
 
 static void mmcovBuildRows(lv_obj_t* card) { mmcovui::buildRows(card); }
+
+#if MMCOV_SHARE
+// On the net worker: the request shareTick built.
+static void mmcovPostRun() {
+  using namespace mmcovui;
+  if (!s_post || s_post_state != 1) return;
+  s_post->code = forkPostJson(s_post->url, s_post->method, s_post->sig, s_post->body, s_post->len, s_post->resp,
+                              sizeof s_post->resp, s_post->msg, sizeof s_post->msg);
+  s_post_state = 2;
+}
+#endif
