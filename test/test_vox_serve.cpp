@@ -823,58 +823,67 @@ void testFastFloodsZeroHopListener() {
 
 // Adaptive spacing, the same cases as the app's vox_timing_test.dart.
 void testAdaptiveSpacing() {
-  auto answer = [](int max_hops, uint32_t gap) {
+  auto answer = [](uint32_t gap) {
     floodpace::Answer a;
     for (int i = 0; i < 100; i++) a.add(i);
-    a.max_hops = max_hops;
     a.gap = gap;
     return a;
   };
-  auto lose = [](int n, uint8_t m[32]) {
+  uint8_t m[32];
+  auto lose = [&](int n) {
     memset(m, 0, 32);
     for (int i = 0; i < n; i++) m[i >> 3] |= (uint8_t)(1u << (i & 7));
+    return m;
   };
-  uint8_t m[32];
+  const uint8_t ka[6] = {1, 1, 1, 1, 1, 1}, kb[6] = {2, 2, 2, 2, 2, 2}, kc[6] = {3, 3, 3, 3, 3, 3};
+  auto pace = []() { floodpace::Pace p(153, true); p.adaptive = true; return p; };
   // Off: the fast gap, however clean.
   floodpace::Pace off(153, true);
+  for (int k = 0; k < 5; k++) { floodpace::Answer a = answer(517); off.feedback(a, lose(0), ka); }
   CHECK(off.gapMs(0) == 517, "off %u", off.gapMs(0));
-  for (int k = 0; k < 5; k++) { floodpace::Answer a = answer(1, 517); lose(0, m); off.feedback(a, m, 1); }
-  CHECK(off.gapMs(0) == 517, "off stays %u", off.gapMs(0));
-  // Down a tenth at a time to the near floor; far keeps the fast gap.
-  floodpace::Pace p(153, true);
-  p.adaptive = true;
-  CHECK(floodpace::adaptiveNearFloorMs(153) == 395, "floor %u", floodpace::adaptiveNearFloorMs(153));
-  CHECK(p.gapMs(0) == 517 && p.gapMs(2) == 517, "start %u/%u", p.gapMs(0), p.gapMs(2));
-  { floodpace::Answer a = answer(1, 517); lose(2, m); CHECK(p.feedback(a, m, 1), "moved"); }
-  CHECK(p.gapMs(1) == 465, "465: %u", p.gapMs(1));
-  for (int k = 0; k < 5; k++) { floodpace::Answer a = answer(1, p.gapMs(1)); lose(1, m); p.feedback(a, m, 1); }
-  CHECK(p.gapMs(0) == 395, "395: %u", p.gapMs(0));
-  { floodpace::Answer a = answer(2, 517); lose(0, m); p.feedback(a, m, 3); }
-  CHECK(p.gapMs(2) == 517, "far 517: %u", p.gapMs(2));
-  // A nearer listener doesn't move a farther answer's gap; unknown hops count.
-  floodpace::Pace q(153, true);
-  q.adaptive = true;
-  { floodpace::Answer a = answer(1, 517); lose(0, m); CHECK(!q.feedback(a, m, 0), "nearer ignored"); }
-  { floodpace::Answer a = answer(1, 517); lose(0, m); CHECK(q.feedback(a, m, -1), "unknown hops count"); }
-  // Back off, hold above the gap that lost, then try lower once the hold ends.
+  // Clean answers: down a tenth at a time to the floor, whatever the hops.
+  floodpace::Pace p = pace();
+  CHECK(p.gapMs(0) == 517 && floodpace::adaptiveFloorMs(153) == 395, "start");
+  { floodpace::Answer a = answer(517); CHECK(p.feedback(a, lose(1), ka), "moved"); }
+  CHECK(p.gapMs(0) == 465, "465: %u", p.gapMs(0));
+  for (int k = 0; k < 5; k++) { floodpace::Answer a = answer(p.gapMs(0)); p.feedback(a, lose(1), ka); }
+  CHECK(p.gapMs(0) == 395 && p.gapMs(4) == 395, "395: %u/%u", p.gapMs(0), p.gapMs(4));
+  // A loss the spacing caused (1% at 517, 12% at 395): back off, hold.
   p.now = 1000;
-  { floodpace::Answer a = answer(1, 395); lose(12, m); p.feedback(a, m, 1); }
-  CHECK(p.gapMs(1) == 493, "493: %u", p.gapMs(1));
+  { floodpace::Answer a = answer(395); CHECK(p.feedback(a, lose(12), ka), "backed off"); }
+  CHECK(p.gapMs(0) == 493, "493: %u", p.gapMs(0));
   p.now = 2000;
-  for (int k = 0; k < 4; k++) { floodpace::Answer a = answer(1, p.gapMs(1)); lose(0, m); p.feedback(a, m, 1); }
-  CHECK(p.gapMs(1) == 434, "434: %u", p.gapMs(1));
+  for (int k = 0; k < 4; k++) { floodpace::Answer a = answer(p.gapMs(0)); p.feedback(a, lose(0), ka); }
+  CHECK(p.gapMs(0) == 434, "434: %u", p.gapMs(0));
   p.now = 1000 + floodpace::kAdaptiveHoldMs + 1;
-  { floodpace::Answer a = answer(1, 434); lose(0, m); p.feedback(a, m, 1); }
-  CHECK(p.gapMs(1) == 395, "395 again: %u", p.gapMs(1));
-  { floodpace::Answer a = answer(1, 395); lose(40, m); p.feedback(a, m, 1); }
-  CHECK(p.gapMs(1) == 592, "592: %u", p.gapMs(1));
-  floodpace::Answer a = answer(1, 592);
-  lose(20, m);
-  p.feedback(a, m, 1);
-  const uint32_t after = p.gapMs(1);
-  lose(0, m);
-  p.feedback(a, m, 1);
-  CHECK(p.gapMs(1) == after, "a clean report doesn't undo a lossy one: %u vs %u", p.gapMs(1), after);
+  { floodpace::Answer a = answer(434); p.feedback(a, lose(0), ka); }
+  CHECK(p.gapMs(0) == 395, "395 again: %u", p.gapMs(0));
+  { floodpace::Answer a = answer(395); p.feedback(a, lose(40), ka); }
+  CHECK(p.gapMs(0) == 592, "592: %u", p.gapMs(0));
+  // A poor link of its own doesn't hold it back.
+  floodpace::Pace q = pace();
+  { floodpace::Answer a = answer(517); q.feedback(a, lose(20), kb); }
+  CHECK(q.gapMs(0) == 646, "646: %u", q.gapMs(0));
+  { floodpace::Answer a = answer(646); CHECK(!q.feedback(a, lose(21), kb), "its link"); }
+  { floodpace::Answer a = answer(646); q.feedback(a, lose(0), ka); }
+  CHECK(q.gapMs(0) == 581, "581: %u", q.gapMs(0));
+  {
+    floodpace::Answer a = answer(581);
+    CHECK(!q.feedback(a, lose(22), kb), "still its link");
+    q.feedback(a, lose(0), ka);
+  }
+  CHECK(q.gapMs(0) == 522, "522: %u", q.gapMs(0));
+  // A rise after a fall on the same answer wins.
+  floodpace::Pace r = pace();
+  floodpace::Answer first = answer(517);
+  r.feedback(first, lose(1), ka);
+  r.feedback(first, lose(1), kc);
+  CHECK(r.gapMs(0) == 465, "465: %u", r.gapMs(0));
+  floodpace::Answer second = answer(465);
+  r.feedback(second, lose(0), ka);
+  CHECK(r.gapMs(0) == 418, "418: %u", r.gapMs(0));
+  r.feedback(second, lose(15), kc);
+  CHECK(r.gapMs(0) == 522, "522: %u", r.gapMs(0));
 }
 
 void testPaceLearnsLoss() {

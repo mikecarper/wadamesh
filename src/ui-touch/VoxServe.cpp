@@ -211,11 +211,9 @@ void VoxServe::enqueue(const VoxWire::FetchRequest& r, int channel, bool from_dm
       if (a.sid != r.sid || a.channel != channel) continue;
       uint8_t miss[32] = {0};
       for (int m = 0; m < r.n_missing; m++) miss[r.missing[m] >> 3] |= (uint8_t)(1u << (r.missing[m] & 7));
-      if (paceFor(channel).feedback(a.answer, miss, hops)) {
-        const floodpace::Pace& p = paceFor(channel);
-        logf("[VOX] serve %08lx: adaptive spacing now %lu ms near, %lu ms far", (unsigned long)r.sid,
-             (unsigned long)p.gapMs(0), (unsigned long)p.gapMs(2));
-      }
+      if (paceFor(channel).feedback(a.answer, miss, r.key6))
+        logf("[VOX] serve %08lx: adaptive spacing now %lu ms", (unsigned long)r.sid,
+             (unsigned long)paceFor(channel).gapMs(0));
     }
   }
   // On a channel, not before the request's own flood has died down near us: its
@@ -500,11 +498,10 @@ void VoxServe::finish(Job& j, const char* why) {
     a.sid = j.sid;
     a.channel = j.channel;
     a.answer = j.answer;
-    a.answer.max_hops = j.max_hops;
     a.answer.gap = j.gap;
     const floodpace::Pace& p = paceFor(j.channel);
     logf("[VOX] serve %08lx: pace %lu ms apart%s, %lu ms first", (unsigned long)j.sid,
-         (unsigned long)p.gapMs(j.max_hops), p.adaptiveNote(j.max_hops), (unsigned long)p.settleMs(j.max_hops));
+         (unsigned long)p.gapMs(j.max_hops), p.adaptiveNote(), (unsigned long)p.settleMs(j.max_hops));
   }
   if (j.bits) io_.freeClip(j.bits);
   j = Job();
