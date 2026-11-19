@@ -192,6 +192,7 @@ class VoxServe {
   bool sendParity(Job& j, uint32_t now);
   bool sendRepair(Job& j, uint32_t now);
   int  repairsDue(const Job& j) const;
+  bool zeroHop(const Job& j) const;
   static void addNeed(Job& j, const VoxWire::FetchRequest& r, int tail_from);
   static void noteData(Job& j, int index);
   bool listCapped(const VoxWire::FetchRequest& r) const;
