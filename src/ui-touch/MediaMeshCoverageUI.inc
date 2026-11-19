@@ -629,7 +629,7 @@ static void buildRows(lv_obj_t* c) {
   };
   lv_obj_add_event_cb(url, onUrl, LV_EVENT_READY, nullptr);
   lv_obj_add_event_cb(url, onUrl, LV_EVENT_DEFOCUSED, nullptr);
-  setNote(c, "Outside CascadiaMesh? Enter your area's CoreScope analyzer.");
+  setNote(c, "Where the points go. Outside CascadiaMesh? Enter your area's analyzer: its upload address, or just its address.");
   s_share_note = setNote(c, "");
   shareNoteRefresh();
 #if MMCOV_SHARE

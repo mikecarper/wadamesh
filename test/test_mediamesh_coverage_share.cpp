@@ -24,6 +24,8 @@ int main() {
   assert(ep(kDefaultAnalyzer, "https://analyzer.cascadiamesh.org/api/mediamesh/coverage-points"));
   assert(ep(" mesh.example.org/ ", "https://mesh.example.org/api/mediamesh/coverage-points"));
   assert(ep("http://192.168.1.5:3000/corescope/?x=1", "http://192.168.1.5:3000/corescope/api/mediamesh/coverage-points"));
+  assert(ep("https://analyzer.cascadiamesh.org/api/mediamesh/coverage-points/", "https://analyzer.cascadiamesh.org/api/mediamesh/coverage-points"));
+  assert(ep("analyzer.cascadiamesh.org", kDefaultAnalyzer));
   assert(ep("", nullptr));
   assert(ep("ftp://example.org", nullptr));
   assert(ep("not an address", nullptr));

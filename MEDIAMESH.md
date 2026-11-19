@@ -171,8 +171,9 @@ added have no such column.
 *Share coverage points* (under Map coverage, off by default) sends the card's
 points to a CoreScope analyzer over Wi-Fi, where the MediaMesh coverage
 estimate is checked against them, the same as MeshCore Open TAK's switch.
-**Analyzer** is `https://analyzer.cascadiamesh.org` unless you enter your own
-area's. Every 5 minutes on Wi-Fi (and on *Send now*) it sends what it hasn't
+**Analyzer** is the address the points are sent to,
+`https://analyzer.cascadiamesh.org/api/mediamesh/coverage-points` unless you
+enter your own area's (its upload address, or just the analyzer's address). Every 5 minutes on Wi-Fi (and on *Send now*) it sends what it hasn't
 yet, up to 200 points a batch, signed by the standalone's own key over
 `corescope-coverage:` and the SHA-256 of the batch; how far into the file it
 got is kept, and a new analyzer gets everything. Lines without a `key` can't

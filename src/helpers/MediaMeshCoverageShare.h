@@ -26,14 +26,17 @@
 
 namespace mmshare {
 
-static constexpr const char* kDefaultAnalyzer = "https://analyzer.cascadiamesh.org";
+static constexpr const char* kDefaultAnalyzer = "https://analyzer.cascadiamesh.org/api/mediamesh/coverage-points";
+static constexpr const char* kUploadPath = "/api/mediamesh/coverage-points";
 static constexpr const char* kSignPrefix = "corescope-coverage:";
 static constexpr const char* kDeletePrefix = "corescope-coverage-delete:";
 static constexpr int kBatchMax = 200;          // samples a batch
 static constexpr size_t kSampleRoom = 700;     // bytes a sample can take (6 repeaters)
 
-/** The upload address for what was typed as the analyzer ("analyzer.example.org",
- *  "https://host/path/"): false when it isn't a web address. */
+/** The upload address for what was typed as the analyzer: the full address the
+ *  points go to, kept as it is, or just the analyzer ("analyzer.example.org",
+ *  "https://host/path/"), which gets kUploadPath added. false when it isn't a
+ *  web address. */
 inline bool endpointFor(const char* analyzer, char* out, size_t cap) {
   if (!analyzer || !out || cap < 16) return false;
   while (*analyzer == ' ') analyzer++;
@@ -59,7 +62,9 @@ inline bool endpointFor(const char* analyzer, char* out, size_t cap) {
   size_t p = h;
   while (rest[p] && rest[p] != '?' && rest[p] != '#') p++;
   while (p > h && rest[p - 1] == '/') p--;
-  const int w = snprintf(out, cap, "%s%.*s/api/mediamesh/coverage-points", scheme, (int)p, rest);
+  const size_t up = strlen(kUploadPath);
+  const bool has = p >= h + up && !strncmp(rest + p - up, kUploadPath, up);
+  const int w = snprintf(out, cap, "%s%.*s%s", scheme, (int)p, rest, has ? "" : kUploadPath);
   return w > 0 && (size_t)w < cap;
 }
 
