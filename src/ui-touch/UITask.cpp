@@ -42029,7 +42029,8 @@ static bool ensureTileFetchTaskRunning();
 
 // MediaMesh coverage points to an analyzer (MediaMeshCoverageUI.inc): the UI
 // builds and signs a batch, the net worker sends it (forkPostJson).
-#if defined(ESP32) && defined(MULTI_TRANSPORT_COMPANION) && WADA_FORK_RELEASES
+// Only where the coverage recorder itself is built (CAP_MM_COVERAGE).
+#if defined(ESP32) && defined(MULTI_TRANSPORT_COMPANION) && WADA_FORK_RELEASES && CAP_MM_COVERAGE
 #define MMCOV_SHARE 1
 static volatile bool s_mmcov_post_request = false;   // UI -> worker
 static void mmcovPostRun();                          // on the worker
