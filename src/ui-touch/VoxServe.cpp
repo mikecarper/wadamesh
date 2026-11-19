@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "VoxServe.h"
 
+#include "VoxFountain.h"
+
 #include "VoxFec.h"
 
 #include <stdarg.h>
@@ -119,6 +121,18 @@ bool VoxServe::mergeChannel(const VoxWire::FetchRequest& r, int channel, int hop
     const int h = hops < 0 ? 3 : hops;
     if (h > q.max_hops) q.max_hops = h;
     q.mark_ok = q.mark_ok && r.mark_ok;   // everyone it answers must read marked packets
+    // Fast MediaMesh: a listener that rebuilds from repair packets gets enough
+    // fresh ones for what it lacks; they mend the others' gaps too.
+    if (fast_ && r.fountain_ok) {
+      if (!r.all) {
+        const int need = VoxFountain::needed(r.n_missing);
+        if (need > q.repairs) q.repairs = need;
+        logf("[VOX] serve %08lx: another listener (%d hops) lacks %d: %d repair packets", (unsigned long)r.sid, h,
+             r.n_missing, q.repairs);
+        return true;
+      }
+      q.repair_first = true;
+    }
     if (q.bits) {   // started: mark the packets it lacks
       for (int k = 0; k < q.total; k++) {
         bool want = r.all;
@@ -165,6 +179,14 @@ void VoxServe::enqueue(const VoxWire::FetchRequest& r, int channel, bool from_dm
   if (t.n_want) memcpy(t.want, r.missing, (size_t)t.n_want);
   t.salt_ok = r.salt_ok;
   t.mark_ok = channel >= 0 && r.mark_ok;   // marked packets go on a channel only
+  if (fast_ && channel >= 0 && r.fountain_ok) {   // Fast MediaMesh: repair packets
+    if (r.all) {
+      t.repair_first = true;
+    } else {
+      t.repairs = VoxFountain::needed(r.n_missing);
+      t.n_want = 0;
+    }
+  }
   if (channel < 0 && r.has_path) {
     // The way the request just reached us, reversed: known to work right now.
     t.have_route = true;
@@ -276,12 +298,16 @@ uint32_t VoxServe::zeroHopGap() {
 floodpace::Pace& VoxServe::paceFor(int channel) {
   const uint32_t air = io_.packetAirMs();
   for (PaceRec& p : paces_)
-    if (p.used && p.channel == channel) { p.pace.air = air; return p.pace; }
+    if (p.used && p.channel == channel) {
+      p.pace.air = air;
+      p.pace.fast = fast_;
+      return p.pace;
+    }
   PaceRec& p = paces_[paces_next_];
   paces_next_ = (paces_next_ + 1) % (int)(sizeof paces_ / sizeof paces_[0]);
   p.used = true;
   p.channel = channel;
-  p.pace = floodpace::Pace(air);
+  p.pace = floodpace::Pace(air, fast_);
   return p.pace;
 }
 
@@ -314,11 +340,16 @@ bool VoxServe::start(Job& j) {
       if (want) j.pend[k >> 3] |= (uint8_t)(1u << (k & 7));
     }
   }
-  if (packetCount(j) == 0) {
+  if (packetCount(j) == 0 && j.repairs == 0) {
     finish(j, "nothing it asked for exists");
     return false;
   }
-  if (j.all) j.par_total = VoxFec::totalParity(j.total, j.mode == VoxWire::kImageModeId);
+  if (j.all && j.repair_first) {
+    const int first = VoxFountain::firstPass(j.total);
+    if (first > j.repairs) j.repairs = first;
+  } else if (j.all) {
+    j.par_total = VoxFec::totalParity(j.total, j.mode == VoxWire::kImageModeId);
+  }
   return true;
 }
 
@@ -344,6 +375,33 @@ bool VoxServe::sendParity(Job& j, uint32_t now) {
   j.send_failures = 0;
   sent_total_++;
   j.par_next++;
+  j.next_at = now + j.gap;
+  return true;
+}
+
+// The next repair packet (Fast MediaMesh). False when there are none left.
+bool VoxServe::sendRepair(Job& j, uint32_t now) {
+  if (j.repairs <= 0 || j.channel < 0) return false;
+  const int pb = VoxWire::packetBytes(j.mode);
+  const int last_len = (int)(j.len - (size_t)(j.total - 1) * (size_t)pb);
+  if (repair_sid_ != j.sid) {
+    repair_sid_ = j.sid;
+    repair_next_ = (int)(io_.random32() % VoxFountain::kSeeds);
+  }
+  uint8_t pkt[VoxFountain::kMaxPacket];
+  const int n = VoxFountain::encode(j.sid, j.bits, j.total, pb, last_len, repair_next_, pkt, sizeof pkt);
+  const bool zero_hop = j.max_hops == 0;
+  const bool ok = n > 0 && io_.sendChannelData(j.channel, VoxWire::kChannelDataType, pkt, (size_t)n, zero_hop);
+  if (!ok) {
+    if (++j.send_failures > 8) { j.repairs = 0; return false; }
+    j.next_at = now + 250;
+    return true;
+  }
+  repair_next_ = (repair_next_ + 1) % VoxFountain::kSeeds;
+  j.send_failures = 0;
+  sent_total_++;
+  j.repairs--;
+  if (!j.first_sent_ms) j.first_sent_ms = now ? now : 1;
   j.next_at = now + j.gap;
   return true;
 }
@@ -426,7 +484,9 @@ void VoxServe::tick() {
     }
   }
   if (idx < 0) {
-    // The data's done: the parity of a whole-clip answer follows.
+    // The data's done: repair packets (Fast MediaMesh) or the parity of a
+    // whole-clip answer follow.
+    if (sendRepair(j, now)) return;
     if (sendParity(j, now)) return;
     finish(j, "served");
     return;
@@ -445,7 +505,7 @@ void VoxServe::tick() {
   const bool mark = salt && j.channel >= 0 && j.mark_ok;
   int left = -1;
   if (mark) {
-    left = j.par_total - j.par_next;
+    left = j.par_total - j.par_next + j.repairs;
     for (int i = 0; i < j.total && i < 256; i++)
       if (i != idx && (j.pend[i >> 3] & (1u << (i & 7)))) left++;
     if (mark_sid_ != j.sid) { memset(mark_sends_, 0, sizeof mark_sends_); mark_sid_ = j.sid; }
@@ -473,7 +533,7 @@ void VoxServe::tick() {
     // A farther listener may have joined: flood from here on, spaced for relays.
     j.gap = j.max_hops == 0 ? zeroHopGap() : paceFor(j.channel).gapMs(j.max_hops);
     j.next_at = now + j.gap;
-    if (nextPending(j) < 0 && j.par_next >= j.par_total) finish(j, "served");
+    if (nextPending(j) < 0 && j.par_next >= j.par_total && j.repairs <= 0) finish(j, "served");
     return;
   }
   j.next_at = now + j.gap;

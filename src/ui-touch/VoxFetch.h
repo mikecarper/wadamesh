@@ -60,6 +60,11 @@ class VoxFetchIo {
 
 class VoxFetch {
  public:
+  // Fast MediaMesh: say on channel requests that we rebuild from
+  // repair packets (VoxFountain.h). Repair packets heard are used either way.
+  void setFast(bool on) { fast_ = on; }
+  bool fast() const { return fast_; }
+
   enum Status : uint8_t { kUnknown = 0, kRemote, kRequesting, kReceiving, kComplete, kUnavailable };
   // kZeroHop: a raw request with an empty path, heard by every radio in range
   // (any holding the clip answers zero-hop); for a clip whose packets came 0
@@ -68,6 +73,8 @@ class VoxFetch {
 
   // Parity packets (VoxFec.h) kept per session.
   static constexpr int kMaxParity = 40;
+  // Repair packets (VoxFountain.h, Fast MediaMesh) kept per session.
+  static constexpr int kMaxRepairs = 120;
 
   static constexpr int kMaxSessions = 6;
   // Attempt and stall budgets for small transfers; larger and nearly
@@ -271,6 +278,9 @@ class VoxFetch {
     // Parity packets heard (VoxFec.h): kMaxParity entries of [info][len][data].
     uint8_t* parity = nullptr;
     uint8_t n_parity = 0;
+    // Repair packets heard (VoxFountain.h): kMaxRepairs of [seed][len][data].
+    uint8_t* repairs = nullptr;
+    uint8_t n_repairs = 0;
     uint8_t rebuilt = 0;       // packets rebuilt from parity
     uint8_t min_hops = 0xFF;   // fewest hops a channel packet of it came over
     bool tried_zero_hop = false;
@@ -308,6 +318,8 @@ class VoxFetch {
   void acceptParity(Session& s, const VoxWire::Packet& p);
   // Rebuilds what the session's parity can; true if any packet came back.
   bool rebuildFromParity(Session& s);
+  void acceptRepair(Session& s, const VoxWire::Packet& p);
+  bool rebuildFromRepairs(Session& s);
   void afterPacket(Session& s, int index, int left = -1);
   void logf(const char* fmt, ...);
   void adoptOrphans(Session& s);
@@ -329,4 +341,5 @@ class VoxFetch {
   Session sessions_[kMaxSessions];
   Orphan* orphans_ = nullptr;   // kMaxOrphans, allocated on first use (PSRAM)
   int orphan_next_ = 0;
+  bool fast_ = false;   // VoxPhotos::setFast turns it on from the setting
 };

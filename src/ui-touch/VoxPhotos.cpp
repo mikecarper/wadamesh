@@ -833,6 +833,11 @@ void tick() {
 }
 
 void setQuick(bool on) { g_quick = on; }
+void setFast(bool on) {
+  g_fetch.setFast(on);
+  g_serve.setFast(on);
+}
+bool fast() { return g_serve.fast(); }
 uint32_t layoutVersion() { return g_layout_ver; }
 
 bool parse(const char* text, VoxWire::Envelope* env) { return VoxWire::parseEnvelope(text, env); }

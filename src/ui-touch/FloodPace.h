@@ -32,6 +32,13 @@ inline uint32_t baseGapMs(uint32_t air) { return air * 4 + 150 > 400 ? air * 4 +
 // The longest wait before answering a request that came `hops` repeaters.
 inline uint32_t settleMaxMs(uint32_t air, int hops) { return hops <= 0 ? 0 : 4 * relayMs(air); }
 inline uint32_t slowGapMs(uint32_t air) { return 2 * baseGapMs(air); }
+// Fast MediaMesh: our airtime, one repeater's average relay wait
+// and its relay (about 2.4 airtimes) and a little, as the app's
+// voxFloodFastBaseGapMs.
+inline uint32_t fastBaseGapMs(uint32_t air) {
+  const uint32_t g = (uint32_t)(air * 2.4 + 0.5) + 150;
+  return g > 400 ? g : 400;
+}
 
 // One answer: the data packets it sent (bit i: packet i), the first of them,
 // and what reports on it have done.
@@ -56,11 +63,15 @@ struct Pace {
   uint32_t air;
   uint32_t gap;
   int extra;   // relays of waiting learnt, 0..2
-  explicit Pace(uint32_t air_ms = 0) : air(air_ms), gap(baseGapMs(air_ms)), extra(0) {}
+  // Fast MediaMesh: start at, and learn down to, fastBaseGapMs.
+  bool fast;
+  explicit Pace(uint32_t air_ms = 0, bool fast_ = false)
+      : air(air_ms), gap(fast_ ? fastBaseGapMs(air_ms) : baseGapMs(air_ms)), extra(0), fast(fast_) {}
 
+  uint32_t base() const { return fast ? fastBaseGapMs(air) : baseGapMs(air); }
   uint32_t fastGapMs(int hops) const {
-    const uint32_t b = baseGapMs(air);
-    if (hops < 2) return b;
+    const uint32_t b = base();
+    if (hops < 2 || fast) return b;
     const uint32_t f = (uint32_t)(air * (3 + 2 * 1.25 * 1.15) + 0.5);
     return f > b ? f : b;
   }
@@ -86,7 +97,7 @@ struct Pace {
         a.clean = true;
         if (a.slowed) gap = gap * 2 / 3;
         const uint32_t g = gap * 4 / 5;
-        gap = g > baseGapMs(air) ? g : baseGapMs(air);
+        gap = g > base() ? g : base();
       }
     } else if (lost * 3 >= a.n && !a.clean && !a.slowed) {
       a.slowed = true;
