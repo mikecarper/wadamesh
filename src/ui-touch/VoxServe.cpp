@@ -369,7 +369,7 @@ bool VoxServe::sendParity(Job& j, uint32_t now) {
   const int last_len = (int)(j.len - (size_t)(j.total - 1) * (size_t)pb);
   uint8_t pkt[VoxFec::kMaxParityPacket];
   const int n = VoxFec::encodeParity(j.sid, j.bits, j.total, pb, last_len, b, k, pkt, sizeof pkt);
-  const bool zero_hop = j.channel >= 0 && j.max_hops == 0;
+  const bool zero_hop = zeroHop(j);
   const bool ok = n > 0 && (j.channel >= 0 ? io_.sendChannelData(j.channel, VoxWire::kChannelDataType, pkt, (size_t)n, zero_hop)
                                            : io_.sendRaw(j.route, j.route_len, pkt, (size_t)n));
   if (!ok) {
@@ -452,7 +452,7 @@ bool VoxServe::sendRepair(Job& j, uint32_t now) {
   }
   uint8_t pkt[VoxFountain::kMaxPacket];
   const int n = VoxFountain::encode(j.sid, j.bits, j.total, pb, last_len, repair_next_, pkt, sizeof pkt);
-  const bool zero_hop = j.max_hops == 0;
+  const bool zero_hop = zeroHop(j);
   const bool ok = n > 0 && io_.sendChannelData(j.channel, VoxWire::kChannelDataType, pkt, (size_t)n, zero_hop);
   if (!ok) {
     if (++j.send_failures > 8) { j.repairs_off = true; return false; }
@@ -467,6 +467,15 @@ bool VoxServe::sendRepair(Job& j, uint32_t now) {
   j.next_at = now + j.gap;
   return true;
 }
+
+// A channel answer sent zero-hop (to radios in range, relayed by none): when
+// everyone asking was heard directly, except with Fast MediaMesh, which floods
+// every answer through the MediaMesh repeaters. In a field test with every
+// radio scanning radio2, zero-hop answers arrived with 41-46% of their packets
+// against 91% flooded at the fast pace: a scanning radio misses packets while
+// it's on the main mesh, and a repeater's copy is a second chance. As the
+// app's _floodOnRadio2.
+bool VoxServe::zeroHop(const Job& j) const { return j.channel >= 0 && j.max_hops == 0 && !fast_; }
 
 void VoxServe::finish(Job& j, const char* why) {
   logf("[VOX] serve %08lx: %s (%d/%d sent)", (unsigned long)j.sid, why, j.next, j.bits ? packetCount(j) : 0);
@@ -526,10 +535,10 @@ void VoxServe::tick() {
     }
   }
   if (!j.gap) {
-    j.gap = j.channel >= 0 ? (j.max_hops == 0 ? zeroHopGap() : paceFor(j.channel).gapMs(j.max_hops)) : packetGap(false, j.route_len);
+    j.gap = j.channel >= 0 ? (zeroHop(j) ? zeroHopGap() : paceFor(j.channel).gapMs(j.max_hops)) : packetGap(false, j.route_len);
     j.next_at = now;
     logf("[VOX] serve %08lx: sending %d packets %s, %lu ms apart", (unsigned long)j.sid, packetCount(j),
-         j.channel < 0 ? "direct" : j.max_hops == 0 ? "zero-hop on the channel" : "on the channel",
+         j.channel < 0 ? "direct" : zeroHop(j) ? "zero-hop on the channel" : "on the channel",
          (unsigned long)j.gap);
   }
   if (!after(now, j.next_at)) return;
@@ -554,7 +563,7 @@ void VoxServe::tick() {
     finish(j, "served");
     return;
   }
-  const bool zero_hop = j.channel >= 0 && j.max_hops == 0;
+  const bool zero_hop = zeroHop(j);
   const int pb = VoxWire::packetBytes(j.mode);
   const size_t off = (size_t)idx * (size_t)pb;
   const int n = (int)(j.len - off < (size_t)pb ? j.len - off : (size_t)pb);
@@ -595,7 +604,7 @@ void VoxServe::tick() {
     j.pend[idx >> 3] &= (uint8_t)~(1u << (idx & 7));
     noteData(j, idx);
     // A farther listener may have joined: flood from here on, spaced for relays.
-    j.gap = j.max_hops == 0 ? zeroHopGap() : paceFor(j.channel).gapMs(j.max_hops);
+    j.gap = zeroHop(j) ? zeroHopGap() : paceFor(j.channel).gapMs(j.max_hops);
     j.next_at = now + j.gap;
     if (nextPending(j) < 0 && j.par_next >= j.par_total && repairsDue(j) <= 0) finish(j, "served");
     return;

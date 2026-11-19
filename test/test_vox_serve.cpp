@@ -800,6 +800,27 @@ void testFastRepairMixedListeners() {
 // repair packets; not 144 repair packets that could never rebuild 200.
 // The pace learns the loss its answers saw (as the app's VoxFloodPace.lossPct):
 // up at once, a quarter down on a cleaner answer, at most 40.
+// Fast MediaMesh floods every channel answer, even to a listener heard
+// directly (a scanning radio's second chance is a repeater's copy); off, a
+// listener 0 hops away is answered zero-hop as before.
+void testFastFloodsZeroHopListener() {
+  for (int fast = 0; fast < 2; fast++) {
+    Sim sim;
+    sim.air = 150;
+    VoxServe s(sim);
+    s.setFast(fast != 0);
+    sim.clips[kSid] = {1, clip1200(10 * 156)};
+    s.markOwn(kSid);
+    uint8_t req[64];
+    const int n = VoxWire::encodeFetch(kSid, kKeyA, nullptr, 0, req, sizeof req, true, nullptr, 0, -1, true, false);
+    s.onPayload(req, (size_t)n, 3, 0);
+    sim.run(s, 60000);
+    CHECK(!sim.sent.empty(), "answered (fast %d)", fast);
+    if (fast) CHECK(sim.zero_hop_sends == 0, "fast: flooded, %d zero-hop", sim.zero_hop_sends);
+    else CHECK(sim.zero_hop_sends == (int)sim.sent.size(), "off: zero-hop, %d of %zu", sim.zero_hop_sends, sim.sent.size());
+  }
+}
+
 void testPaceLearnsLoss() {
   floodpace::Pace p(338, true);
   floodpace::Answer a;
@@ -886,6 +907,7 @@ int main(int argc, char** argv) {
   testFastRepairMixedListeners();
   testFastRepairCappedList();
   testPaceLearnsLoss();
+  testFastFloodsZeroHopListener();
   testDuplicateIgnored();
   testNewerRequestReplaces();
   testQueuedListeners();
