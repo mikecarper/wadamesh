@@ -73,6 +73,15 @@ int main() {
   // Too few: nothing.
   assert(VoxFountain::needed(0) == 0 && VoxFountain::needed(40) >= 46);
   assert(VoxFountain::firstPass(217) == 23);
+  // Owed, as the app's tests: data going out anyway counts towards it, and
+  // sized for the loss answers have seen lately.
+  assert(VoxFountain::owed(0, 221, 0) == 24);
+  assert(VoxFountain::owed(10, 100, 5) == 19);
+  assert(VoxFountain::owed(4, 0, 0, 0) == 6);
+  assert(VoxFountain::passShare(226, 0) == VoxFountain::firstPass(226));
+  assert(VoxFountain::passShare(226, 20) == 65);
+  assert(VoxFountain::neededAt(50, 20) == VoxFountain::needed(63));
+  assert(VoxFountain::passShare(100, 90) == VoxFountain::passShare(100, 40));
   printf("vox fountain: ok (%d/%d with exactly m)\n", exact_ok, trials);
   return 0;
 }

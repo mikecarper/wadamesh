@@ -366,6 +366,7 @@ void VoxFetch::attempt(Session& s) {
   s.at_last_attempt = s.asm_.total() ? s.asm_.received() : 0;
   s.rx_last_ms = 0;   // the next packet starts a new burst
   s.asked_ms = io_.nowMs();
+  s.busy_logged = false;
   // Its packets still on the air (a push, someone's answer): holders other
   // than the sender answer only once it's quiet.
   s.air_busy_at_ask = s.heard_ms && s.asked_ms - s.heard_ms < airQuietMs(zeroHopGap());
@@ -455,6 +456,25 @@ void VoxFetch::onTimeout(Session& s) {
       return;
     }
   }
+  // Fast MediaMesh: MediaMesh still busy (the sender on another part or
+  // another listener's answer, or this clip's repair packets): wait for quiet
+  // rather than flood another request through the repeaters.
+  if (fast_ && s.asked_ms && media_heard_ms_) {
+    const uint32_t now = io_.nowMs();
+    uint32_t quiet = airQuietMs(zeroHopGap());
+    if (quiet < 4000) quiet = 4000;
+    if (burstGap(s) * 3 > quiet) quiet = burstGap(s) * 3;
+    const uint32_t hold = busyAirHoldMs(now - media_heard_ms_, now - s.asked_ms, quiet);
+    if (hold) {
+      if (!s.busy_logged) {
+        s.busy_logged = true;
+        logf("[VOX] fetch %08lx: MediaMesh still busy (a packet %lu ms ago): waiting for quiet before asking again",
+             (unsigned long)s.sid, (unsigned long)(now - media_heard_ms_));
+      }
+      arm(s, hold);
+      return;
+    }
+  }
   const int got = s.storage ? s.asm_.received() : 0;
   const int stall_budget = stallBudget(got, s.total);
   if (s.asked_ms) {
@@ -503,6 +523,7 @@ void VoxFetch::onPayload(const uint8_t* data, size_t len, int channel, uint8_t v
   if (!data || len == 0 || VoxWire::isFetchRequest(data, len)) return;   // this radio doesn't serve
   VoxWire::Packet p;
   if (!VoxWire::parsePacket(data, len, &p)) return;
+  media_heard_ms_ = io_.nowMs() ? io_.nowMs() : 1;   // MediaMesh busy, whoever it was for
   // Raw data doesn't say how far it came: count it as relayed.
   const bool relayed = channel < 0 || hops != 0;
   Session* s = find(p.sid);

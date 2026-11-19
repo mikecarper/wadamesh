@@ -798,6 +798,32 @@ void testFastRepairMixedListeners() {
 // A listener taking repair packets that lacks all 200 can list only 124: the
 // rest after the last it names goes too, all as data, then a first pass's
 // repair packets; not 144 repair packets that could never rebuild 200.
+// The pace learns the loss its answers saw (as the app's VoxFloodPace.lossPct):
+// up at once, a quarter down on a cleaner answer, at most 40.
+void testPaceLearnsLoss() {
+  floodpace::Pace p(338, true);
+  floodpace::Answer a;
+  for (int i = 0; i < 100; i++) a.add(i);
+  uint8_t m[32] = {0};
+  for (int i = 0; i < 20; i++) m[(i * 5) >> 3] |= (uint8_t)(1u << ((i * 5) & 7));
+  p.feedback(a, m);
+  CHECK(p.loss_pct == 20, "loss %d", p.loss_pct);
+  memset(m, 0, sizeof m);
+  for (int i = 0; i < 30; i++) m[(i * 3) >> 3] |= (uint8_t)(1u << ((i * 3) & 7));
+  p.feedback(a, m);
+  CHECK(p.loss_pct == 30, "loss %d", p.loss_pct);
+  floodpace::Answer b;
+  for (int i = 0; i < 100; i++) b.add(i);
+  memset(m, 0, sizeof m);
+  p.feedback(b, m);
+  CHECK(p.loss_pct == 22, "loss %d", p.loss_pct);
+  floodpace::Answer c;
+  for (int i = 0; i < 10; i++) c.add(i);
+  memset(m, 0xFF, sizeof m);
+  p.feedback(c, m);
+  CHECK(p.loss_pct == 40, "loss %d", p.loss_pct);
+}
+
 void testFastRepairCappedList() {
   Sim sim;
   sim.air = 150;
@@ -859,6 +885,7 @@ int main(int argc, char** argv) {
   testFastRepairAnswer();
   testFastRepairMixedListeners();
   testFastRepairCappedList();
+  testPaceLearnsLoss();
   testDuplicateIgnored();
   testNewerRequestReplaces();
   testQueuedListeners();

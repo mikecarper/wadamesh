@@ -121,6 +121,7 @@ bool VoxServe::mergeChannel(const VoxWire::FetchRequest& r, int channel, int hop
     const int h = hops < 0 ? 3 : hops;
     if (h > q.max_hops) q.max_hops = h;
     q.mark_ok = q.mark_ok && r.mark_ok;   // everyone it answers must read marked packets
+    if (fast_) q.loss_pct = paceFor(channel).loss_pct;
     // Fast MediaMesh: a list as long as a request holds may stop short of all
     // it lacks: the rest after the last one named goes too, as data.
     const int tail = listCapped(r) ? r.missing[r.n_missing - 1] + 1 : -1;
@@ -235,6 +236,7 @@ void VoxServe::enqueue(const VoxWire::FetchRequest& r, int channel, bool from_dm
   recent_next_ = (recent_next_ + 1) % (int)(sizeof recent_ / sizeof recent_[0]);
   if (channel >= 0) {
     t.max_hops = hops < 0 ? 3 : hops;
+    if (fast_) t.loss_pct = paceFor(channel).loss_pct;
     if (mergeChannel(r, channel, hops)) return;
   }
 
@@ -433,7 +435,7 @@ int VoxServe::repairsDue(const Job& j) const {
       if ((n.sent[i >> 3] & bit) || (j.pend[i >> 3] & bit)) covered++;
       else uncovered++;
     }
-    const int d = VoxFountain::owed(uncovered, covered, j.repairs_sent - n.repairs_at);
+    const int d = VoxFountain::owed(uncovered, covered, j.repairs_sent - n.repairs_at, j.loss_pct);
     if (d > due) due = d;
   }
   return due;

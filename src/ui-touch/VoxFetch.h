@@ -195,6 +195,17 @@ class VoxFetch {
     const uint32_t want = quiet + kHolderAnswerLeadMs;
     return since_heard < want ? want - since_heard : 0;
   }
+  // Fast MediaMesh: a request timing out while MediaMesh is still busy (a
+  // packet of any clip heard since_heard ago: the sender sending another part,
+  // another listener's answer, or this one's repair packets) waits for quiet
+  // rather than ask again: each request floods the main mesh, and every
+  // repeater scanning radio2 misses radio2 packets while relaying it. 0 to ask
+  // now; never past kBusyAirHoldMaxMs after asking. Same as voxBusyAirHoldMs.
+  static constexpr uint32_t kBusyAirHoldMaxMs = 180000;
+  static uint32_t busyAirHoldMs(uint32_t since_heard, uint32_t since_asked, uint32_t quiet) {
+    if (since_asked > kBusyAirHoldMaxMs) return 0;
+    return since_heard < quiet ? quiet - since_heard : 0;
+  }
   // Unasked packets (a push) stopped with some missing: ask for the rest when
   // at least half is here.
   static bool shouldFinishPassive(int received, int total) {
@@ -268,6 +279,7 @@ class VoxFetch {
     uint8_t rx_gaps = 0;       // how many gaps that is from
     uint32_t asked_ms = 0;     // when the last request went out (the log's timing)
     bool answered = false;     // a packet came since
+    bool busy_logged = false;  // "MediaMesh still busy" logged since the request
     uint32_t heard_ms = 0;     // when any packet of it was last heard, from anyone (copies too)
     bool air_busy_at_ask = false;   // its packets were still on the air when the last request went out
     bool probe_on = false;     // probeFirst(): ask for the thumbnail's packets at probe_at
@@ -342,4 +354,5 @@ class VoxFetch {
   Orphan* orphans_ = nullptr;   // kMaxOrphans, allocated on first use (PSRAM)
   int orphan_next_ = 0;
   bool fast_ = false;   // VoxPhotos::setFast turns it on from the setting
+  uint32_t media_heard_ms_ = 0;   // a packet of any clip last heard (busyAirHoldMs)
 };

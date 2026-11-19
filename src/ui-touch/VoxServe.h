@@ -158,6 +158,7 @@ class VoxServe {
     bool repairs_off = false;      // the radio kept refusing them
     bool repair_first = false;
     int tail_from = -1;            // also every packet from here (a list that may stop short)
+    int loss_pct = 0;              // the loss repair packets are sized for (Pace::loss_pct)
   };
   struct PaceRec { bool used = false; int channel = -1; floodpace::Pace pace; };
   struct AnswerRec { uint32_t sid = 0; int channel = -1; floodpace::Answer answer; };

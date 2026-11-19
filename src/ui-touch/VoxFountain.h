@@ -47,10 +47,36 @@ inline int firstPass(int total) { return total < 2 ? 0 : (total + 9) / 10 + 1; }
 // out since it asked) as data packets anyway (for a listener that can't use
 // repair packets, say), and `sent_since` repair packets went since it asked. A
 // covered packet is lost now and then like any other (radios scanning radio2
-// miss some while on the main mesh), so it costs a first pass's share. As the
-// app's voxFountainOwed.
-inline int owed(int uncovered, int covered, int sent_since) {
-  const int o = needed(uncovered) + firstPass(covered) - sent_since;
+// miss some while on the main mesh), so it costs a pass's share. Both sized for
+// the loss the channel's answers have seen lately. As the app's voxFountainOwed.
+// The most loss repair packets are sized for (percent): a listener losing more
+// is on a poor link of its own, and asks again. As voxFountainMaxLossPct.
+constexpr int kMaxLossPct = 40;
+inline int lossOf(int pct) { return pct < 0 ? 0 : pct > kMaxLossPct ? kMaxLossPct : pct; }
+
+// Repair packets for a listener missing `missing` when `loss_pct`% of what's
+// sent is lost on the way (floodpace::Pace::loss_pct): enough that as many as
+// it lacks still arrive, and the margin. As voxFountainNeededAt.
+inline int neededAt(int missing, int loss_pct) {
+  if (missing <= 0) return 0;
+  const int keep = 100 - lossOf(loss_pct);
+  return needed((missing * 100 + keep - 1) / keep);
+}
+
+// Repair packets after a pass of `count` data packets of which `loss_pct`% are
+// lost: enough to mend what the worst-placed listener lost without asking
+// again (a request round through repeaters costs a minute or more), never under
+// firstPass. As voxFountainPassShare.
+inline int passShare(int count, int loss_pct) {
+  if (count < 2) return 0;
+  const int l = lossOf(loss_pct), keep = 100 - l;
+  const int sized = (count * l * 110 + 100 * keep - 1) / (100 * keep) + 2;
+  const int first = firstPass(count);
+  return sized > first ? sized : first;
+}
+
+inline int owed(int uncovered, int covered, int sent_since, int loss_pct = 0) {
+  const int o = neededAt(uncovered, loss_pct) + passShare(covered, loss_pct) - sent_since;
   return o < 0 ? 0 : o;
 }
 
