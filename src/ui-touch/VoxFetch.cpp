@@ -366,6 +366,7 @@ void VoxFetch::attempt(Session& s) {
   s.at_last_attempt = s.asm_.total() ? s.asm_.received() : 0;
   s.rx_last_ms = 0;   // the next packet starts a new burst
   s.asked_ms = io_.nowMs();
+  s.busy_logged = false;
   // Its packets still on the air (a push, someone's answer): holders other
   // than the sender answer only once it's quiet.
   s.air_busy_at_ask = s.heard_ms && s.asked_ms - s.heard_ms < airQuietMs(zeroHopGap());
@@ -435,6 +436,14 @@ void VoxFetch::attempt(Session& s) {
   io_.changed(s.sid);
 }
 
+// The last packet heard of `sid`'s transfer (VoxFountain::sameTransfer), or 0.
+uint32_t VoxFetch::transferHeardMs(uint32_t sid) const {
+  uint32_t last = 0;
+  for (const HeardSid& h : heard_sids_)
+    if (h.at && VoxFountain::sameTransfer(sid, h.sid) && (!last || h.at > last)) last = h.at;
+  return last;
+}
+
 void VoxFetch::onTimeout(Session& s) {
   if (s.st == kRemote) {
     // Unasked packets stopped arriving: finish it if most of it is here.
@@ -451,6 +460,26 @@ void VoxFetch::onTimeout(Session& s) {
     if (hold) {
       logf("[VOX] fetch %08lx: still on the air (heard %lu ms ago), holding %lu ms", (unsigned long)s.sid,
            (unsigned long)(now - s.heard_ms), (unsigned long)hold);
+      arm(s, hold);
+      return;
+    }
+  }
+  // Fast MediaMesh: this transfer still on the air (the sender on another part
+  // of the clip, or this clip's repair or parity packets): wait for quiet
+  // rather than flood another request through the repeaters.
+  const uint32_t transfer_heard = fast_ && s.asked_ms ? transferHeardMs(s.sid) : 0;
+  if (transfer_heard) {
+    const uint32_t now = io_.nowMs();
+    uint32_t quiet = airQuietMs(zeroHopGap());
+    if (quiet < 4000) quiet = 4000;
+    if (burstGap(s) * 3 > quiet) quiet = burstGap(s) * 3;
+    const uint32_t hold = busyAirHoldMs(now - transfer_heard, now - s.asked_ms, quiet);
+    if (hold) {
+      if (!s.busy_logged) {
+        s.busy_logged = true;
+        logf("[VOX] fetch %08lx: sender still on this transfer (a packet %lu ms ago): waiting for quiet before asking "
+             "again", (unsigned long)s.sid, (unsigned long)(now - transfer_heard));
+      }
       arm(s, hold);
       return;
     }
@@ -503,6 +532,15 @@ void VoxFetch::onPayload(const uint8_t* data, size_t len, int channel, uint8_t v
   if (!data || len == 0 || VoxWire::isFetchRequest(data, len)) return;   // this radio doesn't serve
   VoxWire::Packet p;
   if (!VoxWire::parsePacket(data, len, &p)) return;
+  {   // on the air, whoever it was for (busyAirHoldMs)
+    const uint32_t at = io_.nowMs() ? io_.nowMs() : 1;
+    int slot = 0;
+    for (int i = 0; i < 8; i++) {
+      if (heard_sids_[i].sid == p.sid && heard_sids_[i].at) { slot = i; break; }
+      if (heard_sids_[i].at < heard_sids_[slot].at) slot = i;
+    }
+    heard_sids_[slot] = HeardSid{p.sid, at};
+  }
   // Raw data doesn't say how far it came: count it as relayed.
   const bool relayed = channel < 0 || hops != 0;
   Session* s = find(p.sid);

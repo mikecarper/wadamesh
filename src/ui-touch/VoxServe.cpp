@@ -121,21 +121,24 @@ bool VoxServe::mergeChannel(const VoxWire::FetchRequest& r, int channel, int hop
     const int h = hops < 0 ? 3 : hops;
     if (h > q.max_hops) q.max_hops = h;
     q.mark_ok = q.mark_ok && r.mark_ok;   // everyone it answers must read marked packets
-    // Fast MediaMesh: a listener that rebuilds from repair packets gets enough
-    // fresh ones for what it lacks; they mend the others' gaps too.
+    if (fast_) q.loss_pct = paceFor(channel).loss_pct;
+    // Fast MediaMesh: a list as long as a request holds may stop short of all
+    // it lacks: the rest after the last one named goes too, as data.
+    const int tail = listCapped(r) ? r.missing[r.n_missing - 1] + 1 : -1;
+    // A listener that rebuilds from repair packets gets enough fresh ones for
+    // what no data packet of this burst carries; they mend the others' gaps too.
     if (fast_ && r.fountain_ok) {
-      if (!r.all) {
-        const int need = VoxFountain::needed(r.n_missing);
-        if (need > q.repairs) q.repairs = need;
-        logf("[VOX] serve %08lx: another listener (%d hops) lacks %d: %d repair packets", (unsigned long)r.sid, h,
-             r.n_missing, q.repairs);
+      addNeed(q, r, tail);
+      if (!r.all && tail < 0) {
+        logf("[VOX] serve %08lx: another listener (%d hops) lacks %d: repair packets", (unsigned long)r.sid, h,
+             r.n_missing);
         return true;
       }
-      q.repair_first = true;
+      if (r.all) q.repair_first = true;
     }
     if (q.bits) {   // started: mark the packets it lacks
       for (int k = 0; k < q.total; k++) {
-        bool want = r.all;
+        bool want = r.all || (tail >= 0 && k >= tail);
         for (int m = 0; !want && m < r.n_missing; m++) want = r.missing[m] == k;
         if (want) q.pend[k >> 3] |= (uint8_t)(1u << (k & 7));
       }
@@ -147,6 +150,7 @@ bool VoxServe::mergeChannel(const VoxWire::FetchRequest& r, int channel, int hop
         for (int k = 0; k < q.n_want && !have; k++) have = q.want[k] == r.missing[m];
         if (!have && q.n_want < VoxWire::kMaxPackets) q.want[q.n_want++] = r.missing[m];
       }
+      if (tail >= 0 && (q.tail_from < 0 || tail < q.tail_from)) q.tail_from = tail;
     }
     logf("[VOX] serve %08lx: another listener (%d hops) added to the burst", (unsigned long)r.sid, h);
     return true;
@@ -179,11 +183,14 @@ void VoxServe::enqueue(const VoxWire::FetchRequest& r, int channel, bool from_dm
   if (t.n_want) memcpy(t.want, r.missing, (size_t)t.n_want);
   t.salt_ok = r.salt_ok;
   t.mark_ok = channel >= 0 && r.mark_ok;   // marked packets go on a channel only
+  // Fast MediaMesh: a list that may stop short gets the rest after it too.
+  const int tail = channel >= 0 && listCapped(r) ? r.missing[r.n_missing - 1] + 1 : -1;
+  t.tail_from = tail;
   if (fast_ && channel >= 0 && r.fountain_ok) {   // Fast MediaMesh: repair packets
+    addNeed(t, r, tail);
     if (r.all) {
       t.repair_first = true;
-    } else {
-      t.repairs = VoxFountain::needed(r.n_missing);
+    } else if (tail < 0) {
       t.n_want = 0;
     }
   }
@@ -229,6 +236,7 @@ void VoxServe::enqueue(const VoxWire::FetchRequest& r, int channel, bool from_dm
   recent_next_ = (recent_next_ + 1) % (int)(sizeof recent_ / sizeof recent_[0]);
   if (channel >= 0) {
     t.max_hops = hops < 0 ? 3 : hops;
+    if (fast_) t.loss_pct = paceFor(channel).loss_pct;
     if (mergeChannel(r, channel, hops)) return;
   }
 
@@ -335,19 +343,16 @@ bool VoxServe::start(Job& j) {
   if (j.channel >= 0) {
     memset(j.pend, 0, sizeof j.pend);
     for (int k = 0; k < j.total; k++) {
-      bool want = j.all;
+      bool want = j.all || (j.tail_from >= 0 && k >= j.tail_from);
       for (int m = 0; !want && m < j.n_want; m++) want = j.want[m] == k;
       if (want) j.pend[k >> 3] |= (uint8_t)(1u << (k & 7));
     }
   }
-  if (packetCount(j) == 0 && j.repairs == 0) {
+  if (packetCount(j) == 0 && repairsDue(j) == 0) {
     finish(j, "nothing it asked for exists");
     return false;
   }
-  if (j.all && j.repair_first) {
-    const int first = VoxFountain::firstPass(j.total);
-    if (first > j.repairs) j.repairs = first;
-  } else if (j.all) {
+  if (j.all && !j.repair_first) {
     j.par_total = VoxFec::totalParity(j.total, j.mode == VoxWire::kImageModeId);
   }
   return true;
@@ -379,9 +384,66 @@ bool VoxServe::sendParity(Job& j, uint32_t now) {
   return true;
 }
 
+// A list as long as a request holds (Fast MediaMesh): it may stop short of
+// all the listener lacks.
+bool VoxServe::listCapped(const VoxWire::FetchRequest& r) const {
+  return fast_ && !r.all && r.n_missing >= VoxFountain::kListCap;
+}
+
+// A listener that rebuilds from repair packets lacks what `r` lists (and every
+// packet from `tail_from`), or all of it. Its newest request replaces its last.
+void VoxServe::addNeed(Job& j, const VoxWire::FetchRequest& r, int tail_from) {
+  int slot = -1;
+  for (int i = 0; i < 3 && slot < 0; i++)
+    if (j.needs[i].used && memcmp(j.needs[i].key6, r.key6, 6) == 0) slot = i;
+  for (int i = 0; i < 3 && slot < 0; i++)
+    if (!j.needs[i].used) slot = i;
+  if (slot < 0) { slot = j.need_next; j.need_next = (j.need_next + 1) % 3; }
+  Job::Need& n = j.needs[slot];
+  n = Job::Need();
+  n.used = true;
+  memcpy(n.key6, r.key6, 6);
+  n.repairs_at = j.repairs_sent;
+  if (r.all) {
+    memset(n.miss, 0xFF, sizeof n.miss);
+  } else {
+    for (int m = 0; m < r.n_missing; m++) n.miss[r.missing[m] >> 3] |= (uint8_t)(1u << (r.missing[m] & 7));
+    for (int k = tail_from; tail_from >= 0 && k < 256; k++) n.miss[k >> 3] |= (uint8_t)(1u << (k & 7));
+  }
+}
+
+// Data packet `index` went out (or another node sent it).
+void VoxServe::noteData(Job& j, int index) {
+  if (index < 0 || index > 255) return;
+  const uint8_t bit = (uint8_t)(1u << (index & 7));
+  for (Job::Need& n : j.needs)
+    if (n.used && (n.miss[index >> 3] & bit)) n.sent[index >> 3] |= bit;
+}
+
+// Repair packets still to send after the data, for the listener owed the most:
+// what it lacks that no data packet of this burst carries (with a margin), a
+// share for what one does, less those sent since it asked (VoxFountain::owed).
+int VoxServe::repairsDue(const Job& j) const {
+  if (!j.bits || j.channel < 0 || j.repairs_off) return 0;
+  int due = 0;
+  for (const Job::Need& n : j.needs) {
+    if (!n.used) continue;
+    int covered = 0, uncovered = 0;
+    for (int i = 0; i < j.total && i < 256; i++) {
+      const uint8_t bit = (uint8_t)(1u << (i & 7));
+      if (!(n.miss[i >> 3] & bit)) continue;
+      if ((n.sent[i >> 3] & bit) || (j.pend[i >> 3] & bit)) covered++;
+      else uncovered++;
+    }
+    const int d = VoxFountain::owed(uncovered, covered, j.repairs_sent - n.repairs_at, j.loss_pct);
+    if (d > due) due = d;
+  }
+  return due;
+}
+
 // The next repair packet (Fast MediaMesh). False when there are none left.
 bool VoxServe::sendRepair(Job& j, uint32_t now) {
-  if (j.repairs <= 0 || j.channel < 0) return false;
+  if (j.channel < 0 || repairsDue(j) <= 0) return false;
   const int pb = VoxWire::packetBytes(j.mode);
   const int last_len = (int)(j.len - (size_t)(j.total - 1) * (size_t)pb);
   if (repair_sid_ != j.sid) {
@@ -393,14 +455,14 @@ bool VoxServe::sendRepair(Job& j, uint32_t now) {
   const bool zero_hop = j.max_hops == 0;
   const bool ok = n > 0 && io_.sendChannelData(j.channel, VoxWire::kChannelDataType, pkt, (size_t)n, zero_hop);
   if (!ok) {
-    if (++j.send_failures > 8) { j.repairs = 0; return false; }
+    if (++j.send_failures > 8) { j.repairs_off = true; return false; }
     j.next_at = now + 250;
     return true;
   }
   repair_next_ = (repair_next_ + 1) % VoxFountain::kSeeds;
   j.send_failures = 0;
   sent_total_++;
-  j.repairs--;
+  j.repairs_sent++;
   if (!j.first_sent_ms) j.first_sent_ms = now ? now : 1;
   j.next_at = now + j.gap;
   return true;
@@ -477,6 +539,7 @@ void VoxServe::tick() {
   while (idx >= 0 && !isOwn(j.sid) && heardSince(j.sid, idx, j.asked_at)) {
     if (j.channel >= 0) {
       j.pend[idx >> 3] &= (uint8_t)~(1u << (idx & 7));
+      noteData(j, idx);   // on the air all the same
       idx = nextPending(j);
     } else {
       j.next++;
@@ -505,7 +568,7 @@ void VoxServe::tick() {
   const bool mark = salt && j.channel >= 0 && j.mark_ok;
   int left = -1;
   if (mark) {
-    left = j.par_total - j.par_next + j.repairs;
+    left = j.par_total - j.par_next + repairsDue(j);
     for (int i = 0; i < j.total && i < 256; i++)
       if (i != idx && (j.pend[i >> 3] & (1u << (i & 7)))) left++;
     if (mark_sid_ != j.sid) { memset(mark_sends_, 0, sizeof mark_sends_); mark_sid_ = j.sid; }
@@ -530,10 +593,11 @@ void VoxServe::tick() {
   if (j.channel >= 0 && !zero_hop) j.answer.add(idx);
   if (j.channel >= 0) {
     j.pend[idx >> 3] &= (uint8_t)~(1u << (idx & 7));
+    noteData(j, idx);
     // A farther listener may have joined: flood from here on, spaced for relays.
     j.gap = j.max_hops == 0 ? zeroHopGap() : paceFor(j.channel).gapMs(j.max_hops);
     j.next_at = now + j.gap;
-    if (nextPending(j) < 0 && j.par_next >= j.par_total && j.repairs <= 0) finish(j, "served");
+    if (nextPending(j) < 0 && j.par_next >= j.par_total && repairsDue(j) <= 0) finish(j, "served");
     return;
   }
   j.next_at = now + j.gap;

@@ -670,6 +670,10 @@ int main() {
   assert(VoxFetch::airHoldMs(1000, 8000, 2000) == 2000 + VoxFetch::kHolderAnswerLeadMs - 1000);
   assert(VoxFetch::airHoldMs(6000, 8000, 2000) == 0);
   assert(VoxFetch::airHoldMs(500, 26000, 2000) == 0);
+  // Fast MediaMesh: wait while MediaMesh is busy, up to 3 minutes after asking.
+  assert(VoxFetch::busyAirHoldMs(1000, 30000, 4000) == 3000);
+  assert(VoxFetch::busyAirHoldMs(5000, 30000, 4000) == 0);
+  assert(VoxFetch::busyAirHoldMs(0, 181000, 4000) == 0);
 
   // 18. End-of-answer marker on a channel: the listener's requests say they read
   //     marked packets, and with them a lost tail is asked for again sooner.

@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "VoxFec.h"
+#include "VoxWire.h"
 
 namespace VoxFountain {
 
@@ -40,6 +41,66 @@ inline int needed(int missing) { return missing <= 0 ? 0 : missing + (missing * 
 
 // After a whole clip's first pass: about a tenth, at least 2.
 inline int firstPass(int total) { return total < 2 ? 0 : (total + 9) / 10 + 1; }
+
+// Repair packets still owed a listener that rebuilds from them: `uncovered` of
+// the packets it lacks go out only as repair packets, `covered` go out (or went
+// out since it asked) as data packets anyway (for a listener that can't use
+// repair packets, say), and `sent_since` repair packets went since it asked. A
+// covered packet is lost now and then like any other (radios scanning radio2
+// miss some while on the main mesh), so it costs a pass's share. Both sized for
+// the loss the channel's answers have seen lately. As the app's voxFountainOwed.
+// The most loss repair packets are sized for (percent): a listener losing more
+// is on a poor link of its own, and asks again. As voxFountainMaxLossPct.
+constexpr int kMaxLossPct = 40;
+inline int lossOf(int pct) { return pct < 0 ? 0 : pct > kMaxLossPct ? kMaxLossPct : pct; }
+
+// Repair packets for a listener missing `missing` when `loss_pct`% of what's
+// sent is lost on the way (floodpace::Pace::loss_pct): enough that as many as
+// it lacks still arrive, and the margin. As voxFountainNeededAt.
+inline int neededAt(int missing, int loss_pct) {
+  if (missing <= 0) return 0;
+  const int keep = 100 - lossOf(loss_pct);
+  return needed((missing * 100 + keep - 1) / keep);
+}
+
+// Repair packets after a pass of `count` data packets of which `loss_pct`% are
+// lost: enough to mend what the worst-placed listener lost without asking
+// again (a request round through repeaters costs a minute or more), never under
+// firstPass. As voxFountainPassShare.
+inline int passShare(int count, int loss_pct) {
+  if (count < 2) return 0;
+  const int l = lossOf(loss_pct), keep = 100 - l;
+  const int sized = (count * l * 110 + 100 * keep - 1) / (100 * keep) + 2;
+  const int first = firstPass(count);
+  return sized > first ? sized : first;
+}
+
+inline int owed(int uncovered, int covered, int sent_since, int loss_pct = 0) {
+  const int o = neededAt(uncovered, loss_pct) + passShare(covered, loss_pct) - sent_since;
+  return o < 0 ? 0 : o;
+}
+
+// Whether a packet of session `heard` belongs to the same transfer as `sid`:
+// its data, parity (VoxFec.h) or repair packets, or another part of the same
+// SuperMax clip (part k's id is the first's XOR 0x7A000000 + k * 0x010101), or
+// theirs. The sender answers requests one after another: a listener hearing
+// these is waiting on its sender. As the app's voxSameTransfer.
+inline bool sameTransfer(uint32_t sid, uint32_t heard) {
+  const uint32_t forms[3] = {heard, VoxFec::paritySid(heard), repairSid(heard)};
+  for (uint32_t b : forms) {
+    const uint32_t d = sid ^ b;
+    for (uint32_t j = 0; j <= 3; j++)
+      for (uint32_t k = 0; k <= 3; k++) {
+        const uint32_t oj = j ? 0x7A000000u + j * 0x00010101u : 0, ok = k ? 0x7A000000u + k * 0x00010101u : 0;
+        if (d == (oj ^ ok)) return true;
+      }
+  }
+  return false;
+}
+
+// A request lists at most this many packets: one listing this many may lack
+// more after the last it names (the app's voxFountainListCap).
+constexpr int kListCap = VoxWire::kSaltedFetchIndices;
 
 // The coefficient of data packet i in repair packet `seed`: never 0. The
 // same arithmetic as the app's voxFountainCoef (multiplies mod 2^16).

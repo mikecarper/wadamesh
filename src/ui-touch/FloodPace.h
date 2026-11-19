@@ -46,8 +46,8 @@ struct Answer {
   uint8_t sent[32];
   int n;
   int first;
-  bool clean, slowed, first_came, settle_up;
-  Answer() : n(0), first(-1), clean(false), slowed(false), first_came(false), settle_up(false) {
+  bool clean, slowed, first_came, settle_up, loss_seen;
+  Answer() : n(0), first(-1), clean(false), slowed(false), first_came(false), settle_up(false), loss_seen(false) {
     memset(sent, 0, sizeof sent);
   }
   void add(int i) {
@@ -65,8 +65,14 @@ struct Pace {
   int extra;   // relays of waiting learnt, 0..2
   // Fast MediaMesh: start at, and learn down to, fastBaseGapMs.
   bool fast;
+  // Fast MediaMesh: the share of an answer's packets (percent, 0-40) the
+  // worst-placed listener reporting on it lost lately; repair packets are sized
+  // for it (VoxFountain::passShare). More loss raises it at once; the first
+  // report on each answer that saw less brings it a quarter down. As the app's
+  // VoxFloodPace.lossPct.
+  int loss_pct;
   explicit Pace(uint32_t air_ms = 0, bool fast_ = false)
-      : air(air_ms), gap(fast_ ? fastBaseGapMs(air_ms) : baseGapMs(air_ms)), extra(0), fast(fast_) {}
+      : air(air_ms), gap(fast_ ? fastBaseGapMs(air_ms) : baseGapMs(air_ms)), extra(0), fast(fast_), loss_pct(0) {}
 
   uint32_t base() const { return fast ? fastBaseGapMs(air) : baseGapMs(air); }
   uint32_t fastGapMs(int hops) const {
@@ -92,6 +98,11 @@ struct Pace {
     auto miss = [&](int i) { return (missing[i >> 3] & (1u << (i & 7))) != 0; };
     int lost = 0;
     for (int i = 0; i < 256; i++) if (a.has(i) && miss(i)) lost++;
+    int pct = lost * 100 / a.n;
+    if (pct > 40) pct = 40;
+    if (pct > loss_pct) loss_pct = pct;
+    else if (!a.loss_seen) loss_pct = (loss_pct * 3 + pct) / 4;
+    a.loss_seen = true;
     if (lost * 10 < a.n) {
       if (!a.clean) {
         a.clean = true;

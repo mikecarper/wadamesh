@@ -73,6 +73,21 @@ int main() {
   // Too few: nothing.
   assert(VoxFountain::needed(0) == 0 && VoxFountain::needed(40) >= 46);
   assert(VoxFountain::firstPass(217) == 23);
+  // Owed, as the app's tests: data going out anyway counts towards it, and
+  // sized for the loss answers have seen lately.
+  assert(VoxFountain::owed(0, 221, 0) == 24);
+  assert(VoxFountain::owed(10, 100, 5) == 19);
+  assert(VoxFountain::owed(4, 0, 0, 0) == 6);
+  assert(VoxFountain::passShare(226, 0) == VoxFountain::firstPass(226));
+  assert(VoxFountain::passShare(226, 20) == 65);
+  assert(VoxFountain::neededAt(50, 20) == VoxFountain::needed(63));
+  assert(VoxFountain::passShare(100, 90) == VoxFountain::passShare(100, 40));
+  // The same transfer: parity, repair packets, other SuperMax parts.
+  const uint32_t sid = 0x1A2B3C4Du, p1 = sid ^ 0x7A010101u, p2 = sid ^ 0x7A020202u;
+  assert(VoxFountain::sameTransfer(sid, sid) && VoxFountain::sameTransfer(sid, VoxFec::paritySid(sid)));
+  assert(VoxFountain::sameTransfer(sid, VoxFountain::repairSid(sid)) && VoxFountain::sameTransfer(sid, p2));
+  assert(VoxFountain::sameTransfer(p1, p2) && VoxFountain::sameTransfer(p2, VoxFountain::repairSid(p1)));
+  assert(!VoxFountain::sameTransfer(sid, 0x1A2B3C4Eu) && !VoxFountain::sameTransfer(sid, 0xDEADBEEFu));
   printf("vox fountain: ok (%d/%d with exactly m)\n", exact_ok, trials);
   return 0;
 }
