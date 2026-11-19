@@ -886,6 +886,39 @@ void testAdaptiveSpacing() {
   CHECK(r.gapMs(0) == 522, "522: %u", r.gapMs(0));
 }
 
+// Adaptive spacing: a small answer queued behind a big one goes first.
+void testSmallAnswerFirst() {
+  for (int adaptive = 0; adaptive < 2; adaptive++) {
+    Sim sim;
+    sim.air = 150;
+    VoxServe s(sim);
+    s.setFast(true);
+    s.setAdaptive(adaptive != 0);
+    const uint32_t s1 = 0x11111111, s2 = 0x22222222, s3 = 0x33333333;
+    for (uint32_t sid : {s1, s2, s3}) { sim.clips[sid] = {1, clip1200(20 * 156)}; s.markOwn(sid); }
+    uint8_t req[64];
+    int n = VoxWire::encodeFetch(s1, kKeyA, nullptr, 0, req, sizeof req, true, nullptr, 0, -1, true, false);
+    s.onPayload(req, (size_t)n, 3, 1);
+    sim.run(s, 2000);   // s1 under way
+    n = VoxWire::encodeFetch(s2, kKeyA, nullptr, 0, req, sizeof req, true, nullptr, 0, -1, true, false);
+    s.onPayload(req, (size_t)n, 3, 1);
+    const uint8_t miss[2] = {3, 7};
+    n = VoxWire::encodeFetch(s3, kKeyB, miss, 2, req, sizeof req, true, nullptr, 0, 5, true, false);
+    s.onPayload(req, (size_t)n, 3, 1);
+    sim.run(s, 300000);
+    int first2 = -1, first3 = -1;
+    for (size_t i = 0; i < sim.sent.size(); i++) {
+      VoxWire::Packet pk;
+      if (!VoxWire::parsePacket(sim.sent[i].data.data(), sim.sent[i].data.size(), &pk)) continue;
+      if (pk.sid == s2 && first2 < 0) first2 = (int)i;
+      if (pk.sid == s3 && first3 < 0) first3 = (int)i;
+    }
+    CHECK(first2 >= 0 && first3 >= 0, "both answered (%d %d)", first2, first3);
+    if (adaptive) CHECK(first3 < first2, "adaptive: the small one first (%d < %d)", first3, first2);
+    else CHECK(first2 < first3, "off: in order (%d < %d)", first2, first3);
+  }
+}
+
 void testPaceLearnsLoss() {
   floodpace::Pace p(338, true);
   floodpace::Answer a;
@@ -972,6 +1005,7 @@ int main(int argc, char** argv) {
   testFastRepairMixedListeners();
   testFastRepairCappedList();
   testPaceLearnsLoss();
+  testSmallAnswerFirst();
   testAdaptiveSpacing();
   testFastFloodsZeroHopListener();
   testDuplicateIgnored();

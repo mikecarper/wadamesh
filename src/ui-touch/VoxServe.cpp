@@ -514,6 +514,18 @@ void VoxServe::tick() {
     int pick = -1;
     for (int i = 0; i < kMaxQueued; i++)
       if (jobs_[i].used && (pick < 0 || jobs_[i].seq < jobs_[pick].seq)) pick = i;
+    // Adaptive spacing: a small answer (repair packets, a few missing
+    // packets) that's due goes before a bigger one queued ahead of it, as
+    // the app's voxPickServe.
+    if (fast_ && adaptive_) {
+      int small = -1;
+      for (int i = 0; i < kMaxQueued; i++) {
+        const Job& q = jobs_[i];
+        if (!q.used || q.all || q.n_want > kSmallAnswerPackets || !after(now, q.not_before)) continue;
+        if (small < 0 || q.seq < jobs_[small].seq) small = i;
+      }
+      if (small >= 0) pick = small;
+    }
     if (pick < 0 || !after(now, jobs_[pick].not_before)) return;
     active_ = pick;
     queued_--;

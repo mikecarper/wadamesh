@@ -67,6 +67,9 @@ class VoxServeIo {
 class VoxServe {
  public:
   static constexpr int kMaxQueued = 6;
+  // Adaptive spacing: an answer of at most this many packets goes before
+  // bigger ones queued ahead of it (the app's voxSmallAnswerPackets).
+  static constexpr int kSmallAnswerPackets = 40;
   static constexpr int kMaxOwn = 16;
   static constexpr uint32_t kDupWindowMs = 6000;
   static constexpr uint32_t kRouteWaitMs = 3000;
