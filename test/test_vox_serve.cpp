@@ -741,6 +741,102 @@ void testFastRepairAnswer() {
   CHECK(fast.gapMs(1) < slow.gapMs(1), "fast %u < slow %u", fast.gapMs(1), slow.gapMs(1));
   CHECK(fast.gapMs(3) == floodpace::fastBaseGapMs(338), "fast floor for any hops");
 }
+
+// Repair packets (VoxFountain.h) and data from one sender, as the app's
+// _ChannelBurst: a listener that takes repair packets lacks 1-10, one that
+// doesn't lacks 1-8. 1-8 go as data for the second; the first is owed repair
+// packets only for 9-10 (and a share for 1-8), not for all ten.
+void testFastRepairMixedListeners() {
+  Sim sim;
+  sim.air = 150;
+  VoxServe s(sim);
+  s.setFast(true);
+  const std::vector<uint8_t> bits = clip1200(20 * 156);   // 20 packets
+  sim.clips[kSid] = {1, bits};
+  s.markOwn(kSid);
+  uint8_t a[10], b[8];
+  for (int i = 0; i < 10; i++) a[i] = (uint8_t)(i + 1);
+  for (int i = 0; i < 8; i++) b[i] = (uint8_t)(i + 1);
+  uint8_t ra[64], rb[64];
+  const int na = VoxWire::encodeFetch(kSid, kKeyA, a, 10, ra, sizeof ra, true, nullptr, 0, 3, true, true);
+  const int nb = VoxWire::encodeFetch(kSid, kKeyB, b, 8, rb, sizeof rb, true, nullptr, 0, 3, true, false);
+  s.onPayload(ra, (size_t)na, 3, 1);
+  s.onPayload(rb, (size_t)nb, 3, 1);
+  sim.run(s, 120000);
+  int data = 0, repairs = 0;
+  std::vector<VoxFountain::Repair> rep;
+  std::vector<uint8_t> buf(20 * 156, 0);
+  bool have[20];
+  for (int i = 0; i < 20; i++) {
+    have[i] = i < 1 || i > 10;
+    if (have[i]) memcpy(buf.data() + i * 156, bits.data() + i * 156, 156);
+  }
+  for (auto& p : sim.sent) {
+    VoxWire::Packet pk;
+    if (!VoxWire::parsePacket(p.data.data(), p.data.size(), &pk)) continue;
+    if (pk.sid == VoxFountain::repairSid(kSid)) {
+      repairs++;
+      rep.push_back(VoxFountain::Repair{pk.index, (uint8_t)pk.len, pk.data});
+    } else if (pk.sid == kSid) {
+      data++;
+      if (pk.index < 20 && !have[pk.index]) {
+        have[pk.index] = true;
+        memcpy(buf.data() + pk.index * 156, pk.data, pk.len);
+      }
+    }
+  }
+  CHECK(data == 8, "data %d, want 8", data);
+  const int want = VoxFountain::owed(2, 8, 0);
+  CHECK(repairs == want, "repair packets %d, want %d (was %d)", repairs, want, VoxFountain::needed(10));
+  const int got = VoxFountain::rebuild(
+      20, 156, buf.data(), [&](int i) { return have[i]; }, rep.data(), (int)rep.size(),
+      [&](int i, const uint8_t* d, int len) { memcpy(buf.data() + i * 156, d, (size_t)len); });
+  CHECK(got == 2, "the listener taking repair packets rebuilt %d of 9-10", got);
+  CHECK(memcmp(buf.data(), bits.data(), bits.size()) == 0, "and has the whole clip");
+}
+
+// A listener taking repair packets that lacks all 200 can list only 124: the
+// rest after the last it names goes too, all as data, then a first pass's
+// repair packets; not 144 repair packets that could never rebuild 200.
+void testFastRepairCappedList() {
+  Sim sim;
+  sim.air = 150;
+  VoxServe s(sim);
+  s.setFast(true);
+  const std::vector<uint8_t> bits = clip1200(200 * 156);
+  sim.clips[kSid] = {1, bits};
+  s.markOwn(kSid);
+  uint8_t miss[200];
+  for (int i = 0; i < 200; i++) miss[i] = (uint8_t)i;
+  uint8_t req[200];
+  const int n = VoxWire::encodeFetch(kSid, kKeyA, miss, 200, req, sizeof req, true, nullptr, 0, 3, true, true);
+  VoxWire::FetchRequest fr;
+  CHECK(VoxWire::parseFetch(req, (size_t)n, &fr) && fr.n_missing == VoxFountain::kListCap, "lists %d", fr.n_missing);
+  s.onPayload(req, (size_t)n, 3, 1);
+  sim.run(s, 600000);
+  bool seen[200] = {false};
+  int data = 0, repairs = 0;
+  for (auto& p : sim.sent) {
+    VoxWire::Packet pk;
+    if (!VoxWire::parsePacket(p.data.data(), p.data.size(), &pk)) continue;
+    if (pk.sid == VoxFountain::repairSid(kSid)) repairs++;
+    else if (pk.sid == kSid && pk.index < 200) { data++; seen[pk.index] = true; }
+  }
+  int distinct = 0;
+  for (bool b : seen) distinct += b;
+  CHECK(distinct == 200 && data == 200, "data %d (%d distinct), want all 200", data, distinct);
+  CHECK(repairs == VoxFountain::firstPass(200), "repair packets %d, want %d", repairs, VoxFountain::firstPass(200));
+
+  // Setting off: the 124 it named, as before.
+  Sim old;
+  old.air = 150;
+  VoxServe o(old);
+  old.clips[kSid] = {1, bits};
+  o.markOwn(kSid);
+  o.onPayload(req, (size_t)n, 3, 1);
+  old.run(o, 600000);
+  CHECK((int)old.sent.size() == VoxFountain::kListCap, "off: sent %zu", old.sent.size());
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -761,6 +857,8 @@ int main(int argc, char** argv) {
   testChannelPaceLearns();
   testMarkedChannelAnswer();
   testFastRepairAnswer();
+  testFastRepairMixedListeners();
+  testFastRepairCappedList();
   testDuplicateIgnored();
   testNewerRequestReplaces();
   testQueuedListeners();

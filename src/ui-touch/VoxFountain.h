@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "VoxFec.h"
+#include "VoxWire.h"
 
 namespace VoxFountain {
 
@@ -40,6 +41,22 @@ inline int needed(int missing) { return missing <= 0 ? 0 : missing + (missing * 
 
 // After a whole clip's first pass: about a tenth, at least 2.
 inline int firstPass(int total) { return total < 2 ? 0 : (total + 9) / 10 + 1; }
+
+// Repair packets still owed a listener that rebuilds from them: `uncovered` of
+// the packets it lacks go out only as repair packets, `covered` go out (or went
+// out since it asked) as data packets anyway (for a listener that can't use
+// repair packets, say), and `sent_since` repair packets went since it asked. A
+// covered packet is lost now and then like any other (radios scanning radio2
+// miss some while on the main mesh), so it costs a first pass's share. As the
+// app's voxFountainOwed.
+inline int owed(int uncovered, int covered, int sent_since) {
+  const int o = needed(uncovered) + firstPass(covered) - sent_since;
+  return o < 0 ? 0 : o;
+}
+
+// A request lists at most this many packets: one listing this many may lack
+// more after the last it names (the app's voxFountainListCap).
+constexpr int kListCap = VoxWire::kSaltedFetchIndices;
 
 // The coefficient of data packet i in repair packet `seed`: never 0. The
 // same arithmetic as the app's voxFountainCoef (multiplies mod 2^16).

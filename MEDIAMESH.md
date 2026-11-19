@@ -504,6 +504,8 @@ mikecarper/MeshCore's, recomputed for the actual settings:
 **Settings → MediaMesh → Fast MediaMesh** (on by default) makes photo and voice transfers on radio2 quicker, through repeaters especially. It works the same way as in MeshCore Open TAK:
 
 - **Repair packets** (`VoxFountain.h`). A repair packet is a mix of all of a clip's packets, so a standalone missing *m* packets rebuilds them from any *m* repair packets (practically always *m* + 1). Its channel requests say it takes them. When this standalone answers for a clip it sent, it sends that many fresh repair packets, plus a margin, instead of the specific packets, and that one answer mends every listener's gaps. A whole clip sent at once ends with about a tenth repair packets instead of the block parity.
+- **Repair packets in a mixed group.** Data packets going out anyway, to a listener that can't use repair packets, count towards the repair packets a listener that can is owed (`VoxServe::repairsDue`, `VoxFountain::owed`): it gets repair packets only for what no data packet carries, plus about a tenth of the rest, since a radio scanning radio2 misses some while it's on the main mesh.
+- **Listeners missing most of a clip.** A request names at most 124 packets. A listener naming that many may lack more after the last one, so it gets those as data too, not repair packets, which only mend once there are as many as it lacks.
 - **Closer spacing through repeaters** (`FloodPace.h`). Flooded answers start about 2.4 airtimes apart (about 0.8 s at 250 kHz) instead of 4 (1.5 s), and still slow down when an answer loses a third of its packets.
 
 Standalones and apps without it still get every packet itself: they don't ask for repair packets, and they drop any they hear as an unknown clip.

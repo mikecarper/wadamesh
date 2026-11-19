@@ -141,10 +141,23 @@ class VoxServe {
     floodpace::Answer answer;      // flooded data packets sent, for FloodPace
     bool mark_ok = false;          // everyone asking reads marked (0x58) packets
     uint32_t first_sent_ms = 0;    // when its first packet went (the log's timing)
-    // Fast MediaMesh: repair packets still to send (VoxFountain.h), after
-    // the data; and a first pass ending with them instead of parity.
-    int repairs = 0;
+    // Fast MediaMesh (VoxFountain.h): what each listener that rebuilds from
+    // repair packets lacked when it last asked, and which of those have gone
+    // out as data since; repair packets go after the data for what's left
+    // (repairsDue). A whole-clip first pass ends with them instead of parity.
+    struct Need {
+      bool used = false;
+      uint8_t key6[6] = {0};
+      uint8_t miss[32] = {0};
+      uint8_t sent[32] = {0};
+      int repairs_at = 0;          // repairs_sent when it asked
+    };
+    Need needs[3];
+    int need_next = 0;
+    int repairs_sent = 0;
+    bool repairs_off = false;      // the radio kept refusing them
     bool repair_first = false;
+    int tail_from = -1;            // also every packet from here (a list that may stop short)
   };
   struct PaceRec { bool used = false; int channel = -1; floodpace::Pace pace; };
   struct AnswerRec { uint32_t sid = 0; int channel = -1; floodpace::Answer answer; };
@@ -177,6 +190,10 @@ class VoxServe {
   bool heardSince(uint32_t sid, int index, uint32_t t) const;
   bool sendParity(Job& j, uint32_t now);
   bool sendRepair(Job& j, uint32_t now);
+  int  repairsDue(const Job& j) const;
+  static void addNeed(Job& j, const VoxWire::FetchRequest& r, int tail_from);
+  static void noteData(Job& j, int index);
+  bool listCapped(const VoxWire::FetchRequest& r) const;
 
   bool fast_ = false;   // VoxPhotos::setFast turns it on from the setting
   // The next repair seed for the clip last answered with repair packets, so
