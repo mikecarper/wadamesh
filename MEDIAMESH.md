@@ -513,6 +513,8 @@ mikecarper/MeshCore's, recomputed for the actual settings:
 
 Standalones and apps without it still get every packet itself: they don't ask for repair packets, and they drop any they hear as an unknown clip.
 
+**Adaptive spacing** (**Settings → MediaMesh → Fast MediaMesh → Adaptive spacing**, on by default, needs Fast MediaMesh; `FloodPace.h` `Pace::adaptive`). The gap between an answer's packets learns from the requests that follow it, separately for answers whose farthest listener is 0-1 hops away and for those 2+ away, both from the fast gap (517 ms at 153 ms a packet). An answer whose farthest listener (or one farther) lost under 3% takes its gap down a tenth, for 0-1 hops to 1.6 airtimes and 150 ms (395 ms), for 2+ hops no lower than the fast gap; one that lost 10% puts it up a quarter, a third or more by half, and it then stays 10% above the gap that lost for 30 minutes. Nearer listeners' reports don't move it. A standalone learns afresh after a reboot (the app keeps its learnt gaps). The serial log says "pace N ms apart (adaptive, near)" and "adaptive spacing now …". Switch it off for the spacing of the 2026-11-18 field test, kept as the branch `mediamesh-gold-2026-11-18` here and in MeshCore Open TAK.
+
 **Rolling back.** Switch Fast MediaMesh off, on one standalone or on all of them, and transfers work exactly as they did before. That covers the requests, the answers and the spacing. Standalones and phones with it on and off still work together. To take it out of the firmware altogether, revert the pull request that added it (and the app's).
 
 ## Listen before talk

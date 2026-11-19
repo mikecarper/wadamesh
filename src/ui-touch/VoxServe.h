@@ -96,6 +96,11 @@ class VoxServe {
   // lack, and pace flooded answers by FloodPace's fast gap.
   void setFast(bool on) { fast_ = on; }
   bool fast() const { return fast_; }
+  // Adaptive spacing (with Fast MediaMesh): flooded answers' spacing learns
+  // per distance (FloodPace.h Pace::adaptive). Off: the spacing of the
+  // mediamesh-gold-2026-11-18 branch.
+  void setAdaptive(bool on) { adaptive_ = on; }
+  bool adaptive() const { return adaptive_; }
 
   // For the UI and tests.
   bool busy() const { return active_ >= 0 || queued_ > 0; }
@@ -198,6 +203,7 @@ class VoxServe {
   bool listCapped(const VoxWire::FetchRequest& r) const;
 
   bool fast_ = false;   // VoxPhotos::setFast turns it on from the setting
+  bool adaptive_ = false;   // VoxPhotos::setAdaptive, likewise
   // The next repair seed for the clip last answered with repair packets, so
   // no two of ours are the same (radios drop repeats).
   uint32_t repair_sid_ = 0;
