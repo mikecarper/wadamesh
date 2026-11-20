@@ -158,10 +158,32 @@ repeater in `/meshcomod/mediamesh_coverage.csv` on the card, read back at
 start-up:
 
 ```
-epoch,lat,lon,reach,best_margin,repeater,snr,remote_snr,margin
-1760000000,47.600000,-122.300000,marginal,4.5,First Hill,4.5,3.0,4.5
+epoch,lat,lon,reach,best_margin,repeater,snr,remote_snr,margin,key
+1760000000,47.600000,-122.300000,marginal,4.5,First Hill,4.5,3.0,4.5,1ea5e195
 1760000040,47.601400,-122.300000,none,,,,,
 ```
+
+`key` is the repeater's first 4 key bytes in hex; lines written before it was
+added have no such column.
+
+#### Sharing coverage points
+
+*Share coverage points* (under Map coverage, off by default) sends the card's
+points to a CoreScope analyzer over Wi-Fi, where the MediaMesh coverage
+estimate is checked against them, the same as MeshCore Open TAK's switch.
+**Analyzer** is the address the points are sent to,
+`https://analyzer.cascadiamesh.org/api/mediamesh/coverage-points` unless you
+enter your own area's (its upload address, or just the analyzer's address). Every 5 minutes on Wi-Fi (and on *Send now*) it sends what it hasn't
+yet, up to 200 points a batch, signed by the standalone's own key over
+`corescope-coverage:` and the SHA-256 of the batch; how far into the file it
+got is kept, and a new analyzer gets everything. Lines without a `key` can't
+be sent and are skipped. The analyzer only takes radios it has heard, shows
+the points as 200 m squares without the first and last 300 m of each trip, and
+never says whose they are. *Remove my points from the analyzer* deletes them
+there and switches sharing off; the file stays. The batches and the signed text
+are in `src/helpers/MediaMeshCoverageShare.h` (host-tested); the request runs
+on the net worker (`forkPostJson` in `ForkUpdate.inc`), so only builds with the
+fork's updates can share.
 
 ### MediaMesh repeaters on the map
 
@@ -620,3 +642,4 @@ while it is on.
 | MediaMesh Settings cards, contact ⇄ Radio, channel Send on | `src/ui-touch/UITask.cpp` (`buildMediaMeshCard`, `actionSheetRadioCb`, `chanScopeRadioCb`) |
 | Terminal commands | `MyMesh::handleMeshcomodCommand` |
 | Coverage map: margins, schedule, CSV (host-tested); recorder, map layer, settings rows | `src/helpers/MediaMeshCoverage.h`, `test/test_mediamesh_coverage.cpp`; `src/ui-touch/MediaMeshCoverageUI.inc` |
+| Sharing coverage points: batches, signed text (host-tested); the request | `src/helpers/MediaMeshCoverageShare.h`, `test/test_mediamesh_coverage_share.cpp`; `MediaMeshCoverageUI.inc`, `ForkUpdate.inc` |

@@ -42027,6 +42027,17 @@ static volatile bool s_tile_job_active = false;   // posted or running (shared w
 static void tileFetchJob(void*);
 static bool ensureTileFetchTaskRunning();
 
+// MediaMesh coverage points to an analyzer (MediaMeshCoverageUI.inc): the UI
+// builds and signs a batch, the net worker sends it (forkPostJson).
+// Only where the coverage recorder itself is built (CAP_MM_COVERAGE).
+#if defined(ESP32) && defined(MULTI_TRANSPORT_COMPANION) && WADA_FORK_RELEASES && CAP_MM_COVERAGE
+#define MMCOV_SHARE 1
+static volatile bool s_mmcov_post_request = false;   // UI -> worker
+static void mmcovPostRun();                          // on the worker
+#else
+#define MMCOV_SHARE 0
+#endif
+
 // Something for the net worker to do: a queued tile or a request flag (the
 // same list, under the same conditions, as tileFetchTaskFn serves). Not every
 // requester wakes the worker (the task form polls forever), so on the shared
@@ -42056,6 +42067,9 @@ static bool tileWorkerHasWork() {
 #endif
 #if EMOJI_PACK_DOWNLOAD
   if (s_ep_dl_request) return true;
+#endif
+#if MMCOV_SHARE
+  if (s_mmcov_post_request) return true;
 #endif
   if (__atomic_load_n(&s_wifiscan_request, __ATOMIC_ACQUIRE)) return true;
   return false;
@@ -42274,6 +42288,14 @@ static void tileFetchTaskFn(void* arg) {
       }
       s_pwd_dl_len = got;
       s_pwd_state = ok ? 3 : 4;
+      continue;
+    }
+#endif
+#if MMCOV_SHARE
+    // MediaMesh coverage points to the analyzer (mmcovui::shareTick asked).
+    if (s_mmcov_post_request) {
+      s_mmcov_post_request = false;
+      mmcovPostRun();
       continue;
     }
 #endif

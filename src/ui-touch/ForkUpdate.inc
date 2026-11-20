@@ -19,7 +19,7 @@
 
 namespace forkupd_dev {
 
-enum class Kind : uint8_t { Latest, Slot, Sd, Fetch };
+enum class Kind : uint8_t { Latest, Slot, Sd, Fetch, Post };
 
 struct Job {
   Kind kind;
@@ -37,6 +37,13 @@ struct Job {
   uint8_t* buf;
   size_t cap;
   size_t got;
+  // Post: a JSON body sent with `method` (POST, DELETE) and an
+  // X-MeshCore-Signature header; the reply goes into buf, its status into code.
+  const char* method;
+  const char* sig;
+  const uint8_t* body;
+  size_t body_len;
+  int code;
 };
 
 // mbedTLS takes its memory from INTERNAL RAM in these builds
@@ -497,9 +504,100 @@ static bool fetchToBuf(Job& j) {
   return true;
 }
 
+// One request with a body (MediaMesh coverage points to an analyzer): the
+// reply, whatever its status, into buf (cap - 1 bytes at most, NUL-ended).
+// http:// or https://. The points are signed and become public on the
+// analyzer anyway, so the certificate isn't checked (as for the update, whose
+// image is checked against its own signature).
+#if FORKUPD_IDF_HTTP
+static esp_err_t postEvent(esp_http_client_event_t* e) {
+  Job* j = static_cast<Job*>(e->user_data);
+  if (j && e->event_id == HTTP_EVENT_ON_DATA && j->buf && j->cap && e->data && e->data_len > 0) {
+    const size_t room = j->cap - 1 - j->got;
+    const size_t n = (size_t)e->data_len < room ? (size_t)e->data_len : room;
+    memcpy(j->buf + j->got, e->data, n);
+    j->got += n;
+  }
+  return ESP_OK;
+}
+static bool postBody(Job& j) {
+  j.got = 0;
+  j.code = -1;
+  esp_http_client_config_t cfg = {};
+  cfg.url = j.url;
+  cfg.method = !strcmp(j.method ? j.method : "POST", "DELETE") ? HTTP_METHOD_DELETE : HTTP_METHOD_POST;
+  cfg.timeout_ms = 20000;
+  cfg.user_agent = "wadamesh-fork";
+  if (!strncmp(j.url, "https://", 8)) cfg.crt_bundle_attach = esp_crt_bundle_attach;
+  cfg.event_handler = postEvent;
+  cfg.user_data = &j;
+  cfg.keep_alive_enable = false;
+  esp_http_client_handle_t c = esp_http_client_init(&cfg);
+  if (!c) { say(j, "out of memory"); return false; }
+  esp_http_client_set_header(c, "Content-Type", "application/json");
+  if (j.sig) esp_http_client_set_header(c, "X-MeshCore-Signature", j.sig);
+  esp_http_client_set_post_field(c, (const char*)j.body, (int)j.body_len);
+  const esp_err_t err = esp_http_client_perform(c);
+  if (err == ESP_OK) j.code = esp_http_client_get_status_code(c);
+  else say(j, esp_err_to_name(err));
+  esp_http_client_cleanup(c);
+  if (j.buf && j.cap) j.buf[j.got] = 0;
+  return j.code > 0;
+}
+#else
+static bool postBody(Job& j) {
+  j.got = 0;
+  j.code = -1;
+  const bool tls = !strncmp(j.url, "https://", 8);
+  WiFiClientSecure* scl = tls ? new (std::nothrow) WiFiClientSecure() : nullptr;
+  WiFiClient* pcl = tls ? nullptr : new (std::nothrow) WiFiClient();
+  HTTPClient* h = new (std::nothrow) HTTPClient();
+  bool ok = false;
+  if (h && (scl || pcl)) {
+    if (scl) scl->setInsecure();
+    h->setReuse(false);
+    h->setConnectTimeout(10000);
+    h->setTimeout(20000);
+    h->setUserAgent("wadamesh-fork");
+    if (scl ? h->begin(*scl, j.url) : h->begin(*pcl, j.url)) {
+      h->addHeader("Content-Type", "application/json");
+      if (j.sig) h->addHeader("X-MeshCore-Signature", j.sig);
+      j.code = h->sendRequest(j.method ? j.method : "POST", (uint8_t*)j.body, j.body_len);
+      if (j.code > 0) {
+        String s = h->getString();
+        if (j.buf && j.cap) {
+          j.got = s.length() < j.cap - 1 ? s.length() : j.cap - 1;
+          memcpy(j.buf, s.c_str(), j.got);
+          j.buf[j.got] = 0;
+        }
+        ok = true;
+      } else {
+        char host[64], note[96];
+        hostOf(j.url, host, sizeof host);
+        Get g;
+        g.cl = scl;
+        g.note(host, note, sizeof note);
+        g.cl = nullptr;
+        say(j, note[0] ? note : "can't connect");
+      }
+      h->end();
+    } else {
+      say(j, "bad address");
+    }
+  } else {
+    say(j, "out of memory");
+  }
+  delete h;
+  if (scl) { scl->stop(); delete scl; }
+  if (pcl) { pcl->stop(); delete pcl; }
+  return ok;
+}
+#endif
+
 static void jobBody(Job& j) {
   if (j.kind == Kind::Latest) j.result = latest();
   else if (j.kind == Kind::Fetch) j.result = fetchToBuf(j) ? 1 : 0;
+  else if (j.kind == Kind::Post) j.result = postBody(j) ? 1 : 0;
   else j.result = fetchImage(j) ? 1 : 0;
 }
 
@@ -582,6 +680,24 @@ static bool forkInstallToSlot(int n, volatile int* pct, char* msg, size_t cap) {
 static bool forkSaveToSd(int n, const char* path, volatile int* pct, char* msg, size_t cap) {
   forkupd_dev::Job j{forkupd_dev::Kind::Sd, n, path, pct, msg, cap, 0, nullptr};
   return forkupd_dev::run(j) == 1;
+}
+
+// A JSON body sent with `method` (POST or DELETE) and a signature header; the
+// reply into `resp` (NUL-ended). The HTTP status, or -1 when there was none
+// (the reason in msg).
+static int forkPostJson(const char* url, const char* method, const char* sig, const uint8_t* body, size_t len,
+                        char* resp, size_t resp_cap, char* msg, size_t msg_cap) {
+  forkupd_dev::Job j{forkupd_dev::Kind::Post, 0, nullptr, nullptr, msg, msg_cap, 0, nullptr};
+  j.url = url;
+  j.buf = (uint8_t*)resp;
+  j.cap = resp_cap;
+  j.method = method;
+  j.sig = sig;
+  j.body = body;
+  j.body_len = len;
+  j.code = -1;
+  forkupd_dev::run(j);
+  return j.code;
 }
 
 // A file of at most `cap` bytes, over HTTPS (redirects followed), into `buf`.

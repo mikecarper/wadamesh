@@ -168,6 +168,11 @@ jobs:
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
               -o /tmp/test_mediamesh_coverage test/test_mediamesh_coverage.cpp
           /tmp/test_mediamesh_coverage
+      - name: MediaMesh coverage sharing (batches for the analyzer, signed text)
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
+              -o /tmp/test_mediamesh_coverage_share test/test_mediamesh_coverage_share.cpp
+          /tmp/test_mediamesh_coverage_share
       - name: MediaMesh repeaters (marks from DISCOVER_RESP, expiry, save/load)
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \

@@ -229,6 +229,9 @@ public:
   // count, etc.). self_id and num_channels live in `protected:` of the base
   // classes, so we expose narrow getters here.
   const uint8_t *getSelfPubKey() const { return self_id.pub_key; }
+  /** Sign msg with this node's identity key (64-byte Ed25519 signature): MediaMesh
+   *  coverage points sent to an analyzer (MediaMeshCoverageUI.inc). */
+  void uiSign(uint8_t sig[64], const uint8_t* msg, int len) const { self_id.sign(sig, msg, len); }
   /** Export this node's 64-byte private key (settings backup). */
   size_t uiExportPrivKey(uint8_t dest[64]) { return self_id.writeTo(dest, 64); }
   /** Import a 64-byte private key from a settings backup: validate, persist,
