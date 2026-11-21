@@ -127,7 +127,7 @@ bool VoxServe::mergeChannel(const VoxWire::FetchRequest& r, int channel, int hop
     const int tail = listCapped(r) ? r.missing[r.n_missing - 1] + 1 : -1;
     // A listener that rebuilds from repair packets gets enough fresh ones for
     // what no data packet of this burst carries; they mend the others' gaps too.
-    if (fast_ && r.fountain_ok) {
+    if (fast_ && r.fountain_ok && !thumbAsk(r)) {
       addNeed(q, r, tail);
       if (!r.all && tail < 0) {
         logf("[VOX] serve %08lx: another listener (%d hops) lacks %d: repair packets", (unsigned long)r.sid, h,
@@ -186,7 +186,7 @@ void VoxServe::enqueue(const VoxWire::FetchRequest& r, int channel, bool from_dm
   // Fast MediaMesh: a list that may stop short gets the rest after it too.
   const int tail = channel >= 0 && listCapped(r) ? r.missing[r.n_missing - 1] + 1 : -1;
   t.tail_from = tail;
-  if (fast_ && channel >= 0 && r.fountain_ok) {   // Fast MediaMesh: repair packets
+  if (fast_ && channel >= 0 && r.fountain_ok && !thumbAsk(r)) {   // Fast MediaMesh: repair packets
     addNeed(t, r, tail);
     if (r.all) {
       t.repair_first = true;
@@ -394,6 +394,17 @@ bool VoxServe::sendParity(Job& j, uint32_t now) {
 // all the listener lacks.
 bool VoxServe::listCapped(const VoxWire::FetchRequest& r) const {
   return fast_ && !r.all && r.n_missing >= VoxFountain::kListCap;
+}
+
+// A thumbnail probe: only packets of the first kThumbPackets. Answered with
+// those packets as data even when it says it rebuilds from repair packets (as
+// the app's probes did): its listener holds little of the photo, so repair
+// packets can't give it the thumbnail. Mirrored in the app (thumbAsk).
+bool VoxServe::thumbAsk(const VoxWire::FetchRequest& r) {
+  if (r.all || r.n_missing <= 0) return false;
+  for (int i = 0; i < r.n_missing; i++)
+    if (r.missing[i] >= VoxWire::kThumbPackets) return false;
+  return true;
 }
 
 // A listener that rebuilds from repair packets lacks what `r` lists (and every

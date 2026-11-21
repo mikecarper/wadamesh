@@ -204,6 +204,7 @@ class VoxServe {
   static void addNeed(Job& j, const VoxWire::FetchRequest& r, int tail_from);
   static void noteData(Job& j, int index);
   bool listCapped(const VoxWire::FetchRequest& r) const;
+  static bool thumbAsk(const VoxWire::FetchRequest& r);
 
   bool fast_ = false;   // VoxPhotos::setFast turns it on from the setting
   bool adaptive_ = false;   // VoxPhotos::setAdaptive, likewise

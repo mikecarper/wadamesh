@@ -742,6 +742,33 @@ void testFastRepairAnswer() {
   CHECK(fast.gapMs(3) == floodpace::fastBaseGapMs(338), "fast floor for any hops");
 }
 
+// A thumbnail probe that says it takes repair packets (as the app's probes
+// did) lacks a photo's first two packets and holds little else: it gets those
+// two packets themselves, not repair packets it could never rebuild from.
+void testThumbProbeGetsData() {
+  Sim sim;
+  VoxServe s(sim);
+  s.setFast(true);
+  const std::vector<uint8_t> bits = clip1200(1000);   // 7 packets
+  sim.clips[kSid] = {1, bits};
+  s.markOwn(kSid);
+  const uint8_t miss[2] = {0, 1};
+  uint8_t req[64];
+  const int n = VoxWire::encodeFetch(kSid, kKeyA, miss, 2, req, sizeof req, true, nullptr, 0, 3, true, true);
+  CHECK(n > 0 && (req[5] & VoxWire::kFetchFlagFountainOk), "the probe says it takes repair packets");
+  s.onPayload(req, (size_t)n, 3, 1);
+  sim.run(s, 60000);
+  CHECK(sim.sent.size() == 2, "sent %zu, want the 2 packets", sim.sent.size());
+  bool got[2] = {false, false};
+  for (auto& p : sim.sent) {
+    VoxWire::Packet pk;
+    CHECK(VoxWire::parsePacket(p.data.data(), p.data.size(), &pk), "parses");
+    CHECK(pk.sid == kSid, "a data packet, not a repair packet");
+    if (pk.index < 2) got[pk.index] = true;
+  }
+  CHECK(got[0] && got[1], "packets 0 and 1");
+}
+
 // Repair packets (VoxFountain.h) and data from one sender, as the app's
 // _ChannelBurst: a listener that takes repair packets lacks 1-10, one that
 // doesn't lacks 1-8. 1-8 go as data for the second; the first is owed repair
@@ -1002,6 +1029,7 @@ int main(int argc, char** argv) {
   testChannelPaceLearns();
   testMarkedChannelAnswer();
   testFastRepairAnswer();
+  testThumbProbeGetsData();
   testFastRepairMixedListeners();
   testFastRepairCappedList();
   testPaceLearnsLoss();
