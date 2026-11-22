@@ -316,7 +316,10 @@ generate_ui() {
   ranges=()
   while IFS= read -r arg; do ranges+=("$arg"); done < <(python3 "$lucide_py" ranges "$lucide_cp" lv_symbols)
   icons=$(python3 "$lucide_py" count "$lucide_cp" lv_symbols)
-  "${font_conv[@]}" --no-compress --no-prefilter --bpp 4 --size "$size" --format lvgl \
+  # The larger faces leave room for bike monitoring and games in existing OTA slots.
+  local -a packing=(--no-compress --no-prefilter)
+  if (( size >= 16 )); then packing=(); fi
+  "${font_conv[@]}" "${packing[@]}" --bpp 4 --size "$size" --format lvgl \
     --font "$montserrat" -r 0x20-0x7F,0xB0,0x2022 \
     --font "$lucide" "${ranges[@]}" \
     --lv-font-name "lv_font_montserrat_${size}" -o "$raw"

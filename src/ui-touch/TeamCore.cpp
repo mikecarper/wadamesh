@@ -322,7 +322,8 @@ bool Core::sendRaw(const uint8_t* p, size_t n) {
 bool Core::sendPosition() {
   Fix f;
   if (!active()) return false;
-  const bool has = io_->fix(f);
+  const bool has = ride_interval ? ride_has_fix : io_->fix(f);
+  if (ride_interval && has) f = ride_fix;
   TeamWire::Position p;
   io_->selfKey4(p.key4);
   p.has_pos = has;
@@ -430,6 +431,16 @@ void Core::tick() {
     }
   }
   if (!cfg.share) return;
+  if (ride_interval) {
+    if ((!ride_attempted || now - ride_attempt >= 5000) &&
+        (!ride_sent || now - last_beacon_ms_ >= 1000UL * ride_interval ||
+         (force_beacon_ && now - last_beacon_ms_ >= 5000))) {
+      ride_attempted = true;
+      ride_attempt = now;
+      if (sendPosition()) ride_sent = true;
+    }
+    return;
+  }
   Fix f;
   const long since = beaconed_ ? (long)((now - last_beacon_ms_) / 1000) : -1;
   if (!io_->fix(f)) {
@@ -565,7 +576,9 @@ void Core::onPosition(const TeamWire::Position& x) {
     p.heading_deg = before.heading_deg;
     p.accuracy_m = before.accuracy_m;
   }
-  members_[slot].heard_ms = io_->nowMs();
+  members_[slot].heard_ms = at;
+  members_[slot].latest_has_position = x.has_pos;
+  if (!keep) members_[slot].position_ms = x.has_pos ? at : 0;
   io_->changed();
 }
 

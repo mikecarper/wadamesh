@@ -1230,6 +1230,9 @@ static void memberSheet(int i) {
     break;
   }
 #endif
+#if CAP_BIKE_GAMES
+  sheetBtn(card, TR("Monitor bike rider"), [](lv_event_t*) { bikeui::monitor(s_sel_idx); });
+#endif
   if (m->pos.has_pos) {
     sheetBtn(card, TR("Hound"), [](lv_event_t*) {
       team::Member* x = s_core ? s_core->member(s_sel_idx) : nullptr;
@@ -2543,7 +2546,13 @@ static void loopTick() {
   // Four times a second is plenty for beacons, alert repeats and route cues;
   // every pass of the UI loop read the GPS (and its motion) for nothing.
   static uint32_t last_core = 0;
-  if (now - last_core >= 250) { last_core = now; c->tick(); }
+  if (now - last_core >= 250) {
+    last_core = now;
+#if CAP_BIKE_GAMES
+    bikeui::tick(now);
+#endif
+    c->tick();
+  }
   static uint32_t map_seen = 0, last_map = 0;
   if (Io::s_version != map_seen && now - last_map > 1500) {
     map_seen = Io::s_version;

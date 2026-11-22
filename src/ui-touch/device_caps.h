@@ -434,6 +434,15 @@
   #endif
 #endif
 
+// Family tracking and on-radio games use the existing app slots on these boards.
+#ifndef CAP_BIKE_GAMES
+  #if CAP_TAK_EXTRAS && (defined(LILYGO_TDECK) || defined(TLORA_PAGER) || defined(WADA_WEB))
+    #define CAP_BIKE_GAMES 1
+  #else
+    #define CAP_BIKE_GAMES 0
+  #endif
+#endif
+
 // Predictive text (PREDICTIVE_TEXT.md): wherever the extras are, and on the
 // T-Display P4 too, which keeps its dictionary out of flash (its app slot is
 // full): it loads dictionaries/words-en.pwd from its storage, the SD card or a

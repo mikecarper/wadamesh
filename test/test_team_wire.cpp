@@ -212,11 +212,11 @@ struct TestIo : team::Io {
   team::Fix f;
   bool have_fix = true;
   int alarms = 0;
-  uint32_t rnd = 7;
+  uint32_t rnd = 7, identity = 0xC0FFEE00;
   uint32_t nowMs() override { return now; }
   uint32_t epoch() override { return 1760000000u + now / 1000; }
   uint32_t random32() override { rnd = rnd * 1103515245u + 12345u; return rnd; }
-  void selfKey4(uint8_t out[4]) override { key(out, 0xC0FFEE00); }
+  void selfKey4(uint8_t out[4]) override { key(out, identity); }
   const char* nodeName() override { return "TDeck"; }
   bool fix(team::Fix& out) override { out = f; return have_fix; }
   int batteryPct() override { return 64; }
@@ -595,7 +595,41 @@ static void reach() {
   CHECK(io.sent.size() == 2);
 }
 
+static void rideReports() {
+  TestIo rider, guardian;
+  guardian.identity = 0xAABBCCDD;
+  team::Core sender(&rider), receiver(&guardian);
+  for (auto* c : {&sender, &receiver}) {
+    c->begin(); c->cfg.enabled = true;
+    snprintf(c->cfg.channel, sizeof(c->cfg.channel), "ops");
+  }
+  rider.f.lat = 10; rider.f.lon = 20;  // A manually set location.
+  sender.ride_interval = 60;
+  auto check = [&](bool has_position) {
+    CHECK(!rider.sent.empty());
+    if (rider.sent.empty()) return;
+    const auto& bytes = rider.sent.back();
+    TeamWire::Position p;
+    CHECK(TeamWire::parse(bytes.data(), bytes.size(), p) && p.has_pos == has_position);
+    if (has_position) CHECK(fabs(p.lat - 47.5) < 1e-5);
+    receiver.onPayload("ops", bytes.data(), bytes.size());
+    rider.sent.clear();
+  };
+  sender.tick(); check(false);
+  sender.ride_has_fix = true;
+  sender.ride_fix.lat = 47.5; sender.ride_fix.lon = -122.2;
+  rider.now += 59999; sender.tick(); CHECK(rider.sent.empty());
+  rider.now++; guardian.now = rider.now; sender.tick(); check(true);
+  const uint32_t fix_time = guardian.now;
+  sender.ride_has_fix = false;
+  rider.now += 60000; guardian.now = rider.now; sender.tick(); check(false);
+  auto* m = receiver.member(0);
+  CHECK(m && m->pos.has_pos && !m->latest_has_position && m->position_ms == fix_time && m->heard_ms == guardian.now);
+  sender.cfg.share = false; rider.now += 60000; sender.tick(); CHECK(rider.sent.empty());
+}
+
 int main() {
+  rideReports();
   reach();
   routes();
   golden();

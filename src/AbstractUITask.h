@@ -61,6 +61,8 @@ public:
   }
   virtual void msgRead(int msgcount) = 0;
   virtual void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) = 0;
+  virtual uint8_t onTrackerRequest(const ContactInfo&, uint32_t, const uint8_t*, uint8_t, uint8_t*) { return 0; }
+  virtual bool onGameMessage(const ContactInfo&, const uint8_t*, size_t, bool, const char*) { return false; }
   virtual void newMsgFromPub(uint8_t path_len, const uint8_t* from_pub, const char* from_name, const char* text, int msgcount) {
     (void)from_pub;
     newMsg(path_len, from_name, text, msgcount);

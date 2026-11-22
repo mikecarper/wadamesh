@@ -921,6 +921,7 @@ void MyMesh::beDirectMessage(const uint8_t pub_key[32], uint32_t sender_ts, cons
   if (flood) _n_recv_flood++; else _n_recv_direct++;
   beSignal(snr_q4, rssi);
   stashRxMeta(false, from->id.pub_key, flood ? path_len : 0xFF);
+  if (_ui->onGameMessage(*from, from->id.pub_key, PUB_KEY_SIZE, false, text)) return;
   if (_ui->hidesIncomingText(text, false)) return;
   _ui->notify(UIEventType::contactMessage);
   _last_sender_ts = sender_ts;
@@ -943,12 +944,13 @@ void MyMesh::beChannelMessage(int channel_idx, uint32_t sender_ts, const char* t
   _ui->newMsgFromPubWithMeta(path_len, true, nullptr, channel_name, text, ++_msgcount, snr_q4, rssi);
 }
 void MyMesh::beRoomMessage(const uint8_t room_pub_key[32], const char* author, uint32_t sender_ts,
-                           const char* text, uint8_t path_len, int8_t snr_q4, int8_t rssi) {
+                           const char* text, uint8_t path_len, int8_t snr_q4, int8_t rssi, const uint8_t* author_key4) {
   ContactInfo* room = lookupContactByPubKey(room_pub_key, PUB_KEY_SIZE);
   if (!room || !_ui) return;
   _n_recv_flood++;
   beSignal(snr_q4, rssi);
   stashRxMeta(false, room->id.pub_key, path_len);
+  if (author_key4 && _ui->onGameMessage(*room, author_key4, 4, true, text)) return;
   _ui->notify(UIEventType::roomMessage);
   _last_sender_ts = sender_ts;
   _ui->newRoomMsgFromPubWithMeta(path_len, true, room->id.pub_key, room->name, author, text,

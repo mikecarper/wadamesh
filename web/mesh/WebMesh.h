@@ -279,7 +279,7 @@ private:
   void beChannelMessage(int channel_idx, uint32_t sender_ts, const char* text,
                         uint8_t path_len, int8_t snr_q4, int8_t rssi) override;
   void beRoomMessage(const uint8_t room_pub_key[32], const char* author, uint32_t sender_ts,
-                     const char* text, uint8_t path_len, int8_t snr_q4, int8_t rssi) override;
+                     const char* text, uint8_t path_len, int8_t snr_q4, int8_t rssi, const uint8_t* author_key4 = nullptr) override;
   void beAck(uint32_t expected_ack) override;
   void beRepeatHeard(uint32_t sent_fp, const uint8_t* hop, uint8_t hop_sz) override;
   void beStatusReply(const uint8_t pub_key[32], const uint8_t* data, size_t len) override;

@@ -66,6 +66,7 @@ frequency (MediaMesh, `radio2`) in [MEDIAMESH.md](MEDIAMESH.md). Updating a repe
 the SD card (Mike Carper's LoRa OTA) is in [LORA_UPDATE.md](LORA_UPDATE.md). The Remote ID
 drone detector (app drawer > Drones) is in [DRONES.md](DRONES.md).
 The Team app understands MeshCore TEAM users on the team channel: see [MESHCORE_TEAM.md](MESHCORE_TEAM.md).
+For family ride monitoring, RAK tracker check-ins and multiplayer Artillery, see [Kid on a bike and games](BIKE_AND_GAMES.md).
 Sharing a whole team setup in one QR code or Sound link is in [TEAM_SETUP.md](TEAM_SETUP.md).
 Red light (night vision) is in [NIGHT_MODE.md](NIGHT_MODE.md).
 One-tap answers to alerts, reports, pins and watched reports are in [QUICK_REPLIES.md](QUICK_REPLIES.md).

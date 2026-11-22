@@ -173,3 +173,11 @@ variants/tdisplay_p4/P4Haptic.cpp and P4HapticWaveform.h)
 
 This list is not exhaustive and is expanded as dependencies are vendored or
 added.
+
+Artillery gameplay structure
+    Copyright (c) 2021 loxai. Adapted from rotaryGames under the MIT License.
+    The original notice is in src/ui-touch/ArtilleryGame.LICENSE.
+
+Keymind Cascade tracker protocol
+    src/helpers/TrackerProtocol.h is from mikecarper/MeshCore, commit 497348490,
+    distributed under the MIT License. See the MeshCore notice above.

@@ -773,7 +773,7 @@ private:
         if (a && a->name[0]) author_name = a->name;
         else if (memcmp(author, _self_key, 4) == 0) author_name = _node_prefs.node_name;
         else { mesh::Utils::toHex(author_buf, (uint8_t*)author, 4); author_name = author_buf; }
-        _ev->beRoomMessage(from->id.pub_key, author_name, ts, text.c_str(), path_len, snr_q4, rssi);
+        _ev->beRoomMessage(from->id.pub_key, author_name, ts, text.c_str(), path_len, snr_q4, rssi, author);
       }
       return;
     }

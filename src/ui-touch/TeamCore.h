@@ -30,7 +30,8 @@ constexpr uint32_t kStaleMs = 60UL * 60000UL;
 struct Member {
   bool used = false;
   TeamWire::Position pos;
-  uint32_t heard_ms = 0;
+  uint32_t heard_ms = 0, position_ms = 0;
+  bool latest_has_position = false;
 };
 
 struct AlertRec {
@@ -132,6 +133,12 @@ class Core {
   int compatPeerCount() const;
   void tick();
   bool sendPosition();
+  // Set by the active bike session. An invalid bike fix sends presence only.
+  uint16_t ride_interval = 0;
+  bool ride_has_fix = false;
+  Fix ride_fix;
+  uint32_t ride_attempt = 0;
+  bool ride_attempted = false, ride_sent = false;
 
   // members
   Member* member(int i) { return (i >= 0 && i < kMaxMembers && members_[i].used) ? &members_[i] : nullptr; }

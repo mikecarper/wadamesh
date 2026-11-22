@@ -1,4 +1,5 @@
 #include "MyMesh.h"
+#include "helpers/TrackerProtocol.h"
 #ifdef DISPLAY_CLASS
 #include "ui-touch/VoxPhotos.h"   // MeshCore Open TAK photo fetches
 #include "helpers/MediaMeshReps.h"   // which repeaters run MediaMesh (the map marks them)
@@ -3523,6 +3524,9 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                            const char *text) {
   markConnectionActive(from); // in case this is from a server, and we have a connection
+#ifdef DISPLAY_CLASS
+  if (_ui && _ui->onGameMessage(from, from.id.pub_key, PUB_KEY_SIZE, false, text)) return;
+#endif
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 #if defined(ESP32) && defined(MULTI_TRANSPORT_COMPANION)
   mqtt_bridge.publishDM(from.name, from.id.pub_key, pkt->getSNR(), pkt->path_len, sender_timestamp, text);
@@ -3555,6 +3559,9 @@ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uin
   markConnectionActive(from);
   // from.sync_since change needs to be persisted
   dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+#ifdef DISPLAY_CLASS
+  if (_ui && _ui->onGameMessage(from, sender_prefix, 4, true, text)) return;
+#endif
   queueMessage(from, TXT_TYPE_SIGNED_PLAIN, pkt, sender_timestamp, sender_prefix, 4, text);
 #if defined(ESP32) && defined(MULTI_TRANSPORT_COMPANION)
   mqtt_bridge.publishDM(from.name, from.id.pub_key, pkt->getSNR(), pkt->path_len, sender_timestamp, text);
@@ -3742,6 +3749,11 @@ void MyMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::Packet *
 
 uint8_t MyMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_timestamp, const uint8_t *data,
                                  uint8_t len, uint8_t *reply) {
+  if (!len) return 0;
+#ifdef DISPLAY_CLASS
+  if (data[0] == mesh::tracker::RequestType && _ui)
+    return _ui->onTrackerRequest(contact, sender_timestamp, data, len, reply);
+#endif
   if (data[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
     uint8_t permissions = 0;
     uint8_t cp = contact.flags >> 1; // LSB used as 'favourite' bit (so only use upper bits)

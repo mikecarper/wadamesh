@@ -157,6 +157,7 @@ static void* wadaMp3Scratch() { return s_wada_mp3_scratch; }
 #endif
 #include <Utils.h>
 #include <LvglPsramAlloc.h>   // PSRAM-preferred alloc helpers for the map tile cache
+#include "ArtilleryGame.h"
 #include "SnakeGame.h"        // Apps → Snake (self-contained game module)
 #include "LuaHost.h"          // Lua app host (LUA_APPS.md; Phase 0 spike gate)
 #include "LuaAppHost.h"       // sandboxed Lua apps (LUA_APPS.md Phase 1; self-gated on CAP_LUA_APPS)
@@ -10919,6 +10920,10 @@ static void applySwipeGesture(int8_t swipe_x, int8_t swipe_y) {
   if (luaAppIsOpen()) {   // Lua apps get the same reliable hardware swipes as Snake did
     if (swipe_x != 0)      luaAppSteer(swipe_x < 0 ? -1 : 1, 0);
     else if (swipe_y != 0) luaAppSteer(0, swipe_y < 0 ? -1 : 1);
+    return;
+  }
+  if (CAP_BIKE_GAMES && ArtilleryGame::isOpen()) {
+    ArtilleryGame::steer(swipe_x ? (swipe_x < 0 ? -1 : 1) : 0, swipe_y ? (swipe_y < 0 ? -1 : 1) : 0);
     return;
   }
   if (SnakeGame::isOpen()) {
@@ -56223,6 +56228,13 @@ static void updateTrackball(unsigned long now) {
 
   // ---- Snake game ----
   // While Snake is open the trackball steers it (no soft cursor on that page).
+  if (CAP_BIKE_GAMES && ArtilleryGame::isOpen() && !g_lv.task->isManualLocked()) {
+    lv_obj_add_flag(s_tb_cursor, LV_OBJ_FLAG_HIDDEN);
+    ArtilleryGame::setFire(s_tb_click_press);
+    s_tb_click_press = false;
+    if (moved) ArtilleryGame::steer(dx, dy);
+    return;
+  }
   if (SnakeGame::isOpen() || luaAppIsOpen()) {
     if (!lv_obj_has_flag(s_tb_cursor, LV_OBJ_FLAG_HIDDEN))
       lv_obj_add_flag(s_tb_cursor, LV_OBJ_FLAG_HIDDEN);
@@ -57840,6 +57852,12 @@ static void updatePagerEncoder(unsigned long now) {
   if (delta != 0 && vibInputOn()) pagerHapticsClick(vibKeyLevel());   // one click per detent batch
 #endif
 
+  if (CAP_BIKE_GAMES && ArtilleryGame::isOpen() && !s_pin_root && !g_lv.task->isManualLocked()) {
+    while (delta > 0) { ArtilleryGame::steer(1, 0); --delta; }
+    while (delta < 0) { ArtilleryGame::steer(-1, 0); ++delta; }
+    ArtilleryGame::setFire(held);
+    return;
+  }
   // The PIN screen: turning walks its number pad, a click presses the lit key.
   {
     static bool s_pin_click_was = false;
@@ -61897,6 +61915,8 @@ static void handleHwKey(int key) {
     pinPadKey(key == LV_KEY_ESC ? 27 : key);
     return;
   }
+  if (CAP_BIKE_GAMES && ArtilleryGame::isOpen() && !g_lv.task->isManualLocked() &&
+      key >= 0 && key < 128 && ArtilleryGame::keyChar((char)key)) return;
   // A running Lua app gets the keyboard, which is what makes Lua apps usable at
   // all on the boards that have one (T-Deck, Pager, M9, Attaky) -- until now an
   // app only ever saw touch and trackball direction.
@@ -66940,14 +66960,25 @@ enum AppDrawerAction {
   APPACT_FLOCK,
   APPACT_SOUND,
   APPACT_DRONE,
-  APPACT_PHOTOS,
+  APPACT_PHOTOS, APPACT_BIKE, APPACT_GAMES,
   APPACT_LUA_BASE = 100,   // APPACT_LUA_BASE + i = installed Lua app s_lua_inst[i]
 };
 // OTP Messenger (app drawer -> APPACT_OTP): the screens; protocol in OtpCore.cpp.
 #include "ForkLook.inc"   // the look of this fork's own apps
 #include "OtpMessengerUI.inc"
 // Team (app drawer -> APPACT_TEAM): MeshCore Open TAK team awareness; rules in TeamCore.cpp.
+#if CAP_BIKE_GAMES
+#include "BikeRide.h"
+namespace bikeui { static void tick(uint32_t now); static void monitor(int index); }
+#endif
 #include "TeamUI.inc"
+#if CAP_BIKE_GAMES
+#include "BikeRideUI.inc"
+#ifndef WADA_WEB
+#include "RideTagUI.inc"
+#endif
+#include "GamesUI.inc"
+#endif
 #if CAP_MM_COVERAGE
 // A tapped MediaMesh coverage dot's sheet (MediaMeshCoverageUI.inc's mapTap).
 static void mmcovShowSheet(const char* title, const char* body) {
@@ -67089,6 +67120,10 @@ static const AppTileDef k_app_tiles[] = {
   { UI_ICON_GAMEPAD_2,          "Snake",     APPACT_SNAKE,     HUE_MSG },     // native snake (Lua boards install it from the Store)
 #else
   { UI_ICON_STORE,              "Store",     APPACT_STORE,     HUE_MSG },     // Lua app store
+#endif
+#if CAP_BIKE_GAMES
+  { UI_ICON_ROUTE,              "Kid on a bike", APPACT_BIKE,      HUE_PLACE },
+  { UI_ICON_GAMEPAD_2,          "Games",     APPACT_GAMES,     HUE_MSG },
 #endif
   { UI_ICON_HOUSE,              "Home",      APPACT_CMDCENTER, HUE_SYS },     // back to the Home widgets
   { UI_ICON_POWER,              "Power",     APPACT_POWER,     kAppHueDanger },
@@ -67474,6 +67509,10 @@ static void appLaunch(int act, lv_event_t* e) {
 #endif
 #if defined(MULTI_TRANSPORT_COMPANION) && CAP_WEB_BROWSER
     case APPACT_READER:    openReaderPage();     return;   // on-device text browser (no proxy)
+#endif
+#if CAP_BIKE_GAMES
+    case APPACT_BIKE:      bikeui::open(); return;
+    case APPACT_GAMES:     gamesui::open(); return;
 #endif
     case APPACT_ADVERT:    openAdvertModalCb(e);  return;
     case APPACT_POWER:     openPowerMenu();      return;
@@ -88991,6 +89030,14 @@ bool UITask::setPosition(double lat, double lon) {
   return true;
 }
 
+bool UITask::rideGps(int32_t& lat, int32_t& lon, uint32_t& utc) {
+  LocationProvider* lp = _sensors ? _sensors->getLocationProvider() : nullptr;
+  if (!lp || !getGPSState() || !lp->isValid()) return false;
+  utc = getGpsTime();
+  lat = lp->getLatitude(); lon = lp->getLongitude();
+  return utc && lat >= -90000000 && lat <= 90000000 && lon >= -180000000 && lon <= 180000000;
+}
+
 bool UITask::getGpsFix() {
   if (!_sensors) return false;
   LocationProvider* lp = _sensors->getLocationProvider();
@@ -91953,6 +92000,32 @@ void UITask::newMsgImpl(uint8_t path_len, const char* from_name, const char* tex
 #endif
 }
 
+uint8_t UITask::onTrackerRequest(const ContactInfo& from, uint32_t ts, const uint8_t* data, uint8_t len, uint8_t* reply) {
+#if CAP_BIKE_GAMES && !defined(WADA_WEB)
+  return bikeui::receiveTag(from, ts, data, len, reply);
+#else
+  return 0;
+#endif
+}
+
+bool UITask::onGameMessage(const ContactInfo& transport, const uint8_t* author, size_t len,
+                           bool room, const char* text) {
+#if CAP_BIKE_GAMES
+  if (!text || strncmp(text, "~SG1|", 5) || touchPrefsIsIgnored(transport.id.pub_key)) return false;
+  bool pending = ArtilleryGame::hasPendingInvite();
+  bool consumed = ArtilleryGame::handleMeshMessage(transport, author, len, room, text);
+  if (consumed && !pending && ArtilleryGame::hasPendingInvite() && !ArtilleryGame::isOpen())
+    showAlert(TR("Artillery invite: open Games"), 4500);
+  return consumed;
+#else
+  return false;
+#endif
+}
+
+extern "C" void touchArtilleryTurnAlert() {
+  if (g_lv.task) g_lv.task->showAlert(TR("Your artillery turn"), 2500);
+}
+
 void UITask::newMsgFromPub(uint8_t path_len, const uint8_t* from_pub, const char* from_name, const char* text, int msgcount) {
   if (from_pub && touchPrefsIsIgnored(from_pub)) return;   // blocked sender — drop (no chat entry, no notify)
   newMsg(path_len, from_name, text, msgcount);
@@ -94561,7 +94634,7 @@ void UITask::loop() {
     }
     // Also hard-lock the tab bar while Snake is open so a swipe/tap near the
     // bottom can't slip through to the app switcher (e.g. into the map).
-    const bool want_lock = (now < s_tabbar_lock_until) || SnakeGame::isOpen() || luaAppIsOpen();
+    const bool want_lock = (now < s_tabbar_lock_until) || (CAP_BIKE_GAMES && ArtilleryGame::isOpen()) || SnakeGame::isOpen() || luaAppIsOpen();
     if (want_lock != s_tabbar_locked && g_lv.tabview) {
       lv_obj_t* tab_btns = lv_tabview_get_tab_btns(g_lv.tabview);
       if (tab_btns) {

@@ -556,6 +556,7 @@ public:
 #endif
   /** True if the GPS currently reports a valid fix. */
   bool getGpsFix();
+  bool rideGps(int32_t& lat, int32_t& lon, uint32_t& utc);
   /** Satellites currently in view, or -1 if unknown / no GPS hardware. */
   int  getGpsSats();
   /** UTC epoch the GPS itself has decoded, or 0 if it has none yet. A receiver decodes TIME from
@@ -640,6 +641,8 @@ public:
 
   // from AbstractUITask
   void msgRead(int msgcount) override;
+  uint8_t onTrackerRequest(const ContactInfo&, uint32_t, const uint8_t*, uint8_t, uint8_t*) override;
+  bool onGameMessage(const ContactInfo&, const uint8_t*, size_t, bool, const char*) override;
   void newMsgFromPub(uint8_t path_len, const uint8_t* from_pub, const char* from_name, const char* text, int msgcount) override;
   void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) override;
   // Meta-aware variant — MyMesh calls this from the packet receive path so the

@@ -53,7 +53,7 @@ public:
                                 uint8_t path_len, int8_t snr_q4, int8_t rssi) = 0;
   // A room-server post (thread = the room contact, author = the poster's name).
   virtual void beRoomMessage(const uint8_t room_pub_key[32], const char* author, uint32_t sender_ts,
-                             const char* text, uint8_t path_len, int8_t snr_q4, int8_t rssi) = 0;
+                             const char* text, uint8_t path_len, int8_t snr_q4, int8_t rssi, const uint8_t* author_key4 = nullptr) = 0;
   // The ACK for a DM we sent (the expected_ack the backend returned from sendDirect).
   virtual void beAck(uint32_t expected_ack) = 0;
   // A flood we sent was heard repeated (fingerprint from sendDirect/sendChannel).
